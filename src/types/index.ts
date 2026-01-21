@@ -1,8 +1,3 @@
-// ============================================
-// GoTyolo Type Definitions
-// ============================================
-
-// Booking States
 export const STATES = {
   PENDING_PAYMENT: 'PENDING_PAYMENT',
   CONFIRMED: 'CONFIRMED',
@@ -12,7 +7,6 @@ export const STATES = {
 
 export type BookingState = typeof STATES[keyof typeof STATES];
 
-// State Machine Events
 export const EVENTS = {
   PAYMENT_SUCCESS: 'PAYMENT_SUCCESS',
   PAYMENT_FAILED: 'PAYMENT_FAILED',
@@ -23,12 +17,7 @@ export const EVENTS = {
 
 export type BookingEvent = typeof EVENTS[keyof typeof EVENTS];
 
-// Trip Status
 export type TripStatus = 'DRAFT' | 'PUBLISHED';
-
-// ============================================
-// Database Row Types
-// ============================================
 
 export interface TripRow {
   id: string;
@@ -62,7 +51,6 @@ export interface BookingRow {
   updated_at: string;
 }
 
-// Extended booking with trip details
 export interface BookingWithTrip extends BookingRow {
   title?: string;
   destination?: string;
@@ -71,10 +59,6 @@ export interface BookingWithTrip extends BookingRow {
   refundable_until_days_before?: number;
   cancellation_fee_percent?: number;
 }
-
-// ============================================
-// API Request/Response Types
-// ============================================
 
 export interface CreateBookingRequest {
   user_id: string;
@@ -90,7 +74,7 @@ export interface CreateTripRequest {
   max_capacity: number;
   refundable_until_days_before: number;
   cancellation_fee_percent: number;
-  status?: TripStatus; // Optional, defaults to 'DRAFT'
+  status?: TripStatus;
 }
 
 export interface WebhookRequest {
@@ -131,10 +115,6 @@ export interface AtRiskTripsResponse {
   at_risk_trips: AtRiskTrip[];
 }
 
-// ============================================
-// State Machine Transitions
-// ============================================
-
 export type TransitionMap = {
   [K in BookingState]?: {
     [E in BookingEvent]?: BookingState;
@@ -152,10 +132,6 @@ export const TRANSITIONS: TransitionMap = {
     [EVENTS.CANCEL_AFTER_CUTOFF]: STATES.CANCELLED,
   },
 };
-
-// ============================================
-// Error Types
-// ============================================
 
 export class HttpError extends Error {
   status: number;

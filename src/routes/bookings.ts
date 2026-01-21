@@ -6,18 +6,6 @@ import { handleValidation } from '../middleware/validation';
 
 const router = Router();
 
-/**
- * POST /trips/:tripId/book
- * Create a new booking for a trip
- * 
- * Request body:
- * - user_id: string - User making the booking
- * - num_seats: number - Number of seats to book
- * 
- * Response:
- * - booking: Booking object
- * - payment_url: URL to complete payment
- */
 router.post(
   '/trips/:tripId/book',
   [
@@ -44,10 +32,6 @@ router.post(
   }
 );
 
-/**
- * GET /bookings/:id
- * Get details of a specific booking
- */
 router.get(
   '/bookings/:id',
   [param('id').isString().notEmpty()],
@@ -67,14 +51,6 @@ router.get(
   }
 );
 
-/**
- * POST /bookings/:id/cancel
- * Cancel a booking and process refund if applicable
- * 
- * Refund rules:
- * - Before cutoff: Refund = price × (1 - cancellation_fee_percent/100)
- * - After cutoff: Refund = $0
- */
 router.post(
   '/bookings/:id/cancel',
   [param('id').isString().notEmpty()],

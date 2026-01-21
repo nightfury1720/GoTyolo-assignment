@@ -28,17 +28,14 @@ interface BookingSeed {
 }
 
 async function seed(): Promise<void> {
-  // Initialize database
   getDb();
 
   await withTransaction(async (db) => {
-    // Clear existing data
     await run(db, 'DELETE FROM bookings');
     await run(db, 'DELETE FROM trips');
 
     const now = new Date();
 
-    // Sample trips with various configurations
     const trips: TripSeed[] = [
       {
         id: uuidv4(),
@@ -107,7 +104,6 @@ async function seed(): Promise<void> {
       },
     ];
 
-    // Insert trips
     for (const trip of trips) {
       const ts = new Date().toISOString();
       await run(
@@ -134,9 +130,7 @@ async function seed(): Promise<void> {
       );
     }
 
-    // Sample bookings with various states
     const sampleBookings: BookingSeed[] = [
-      // Paris - 2 confirmed bookings
       {
         trip: trips[0],
         num_seats: 2,
@@ -149,14 +143,12 @@ async function seed(): Promise<void> {
         state: STATES.CONFIRMED,
         refund_amount: 0,
       },
-      // Paris - 1 pending payment
       {
         trip: trips[0],
         num_seats: 1,
         state: STATES.PENDING_PAYMENT,
         expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
       },
-      // Tokyo - 1 expired, 1 cancelled with refund
       {
         trip: trips[1],
         num_seats: 4,
@@ -167,17 +159,15 @@ async function seed(): Promise<void> {
         trip: trips[1],
         num_seats: 2,
         state: STATES.CANCELLED,
-        refund_amount: 1280, // 800 * 2 * (1 - 0.20)
+        refund_amount: 1280,
         cancelled_at: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString(),
       },
-      // NY - 5 confirmed
       {
         trip: trips[2],
         num_seats: 5,
         state: STATES.CONFIRMED,
         refund_amount: 0,
       },
-      // London - 3 confirmed, 2 pending
       {
         trip: trips[3],
         num_seats: 3,
@@ -190,7 +180,6 @@ async function seed(): Promise<void> {
         state: STATES.PENDING_PAYMENT,
         expires_at: new Date(now.getTime() + 12 * 60 * 1000).toISOString(),
       },
-      // Rome - 2 confirmed, 1 cancelled (no refund - after cutoff)
       {
         trip: trips[4],
         num_seats: 2,
@@ -201,12 +190,11 @@ async function seed(): Promise<void> {
         trip: trips[4],
         num_seats: 1,
         state: STATES.CANCELLED,
-        refund_amount: 0, // After cutoff, no refund
+        refund_amount: 0,
         cancelled_at: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000).toISOString(),
       },
     ];
 
-    // Insert bookings
     for (const entry of sampleBookings) {
       const id = uuidv4();
       const created = new Date().toISOString();
@@ -232,7 +220,6 @@ async function seed(): Promise<void> {
         ]
       );
 
-      // Update available seats for non-terminal bookings
       if (entry.state !== STATES.EXPIRED && entry.state !== STATES.CANCELLED) {
         await run(
           db,

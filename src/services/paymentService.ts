@@ -9,15 +9,6 @@ interface WebhookResult {
   message?: string;
 }
 
-/**
- * Process a payment webhook from the payment provider.
- * Handles idempotency to prevent duplicate processing.
- * 
- * @param bookingId - ID of the booking
- * @param status - Payment status ('success' or 'failed')
- * @param idempotencyKey - Unique key for idempotent processing
- * @returns Updated booking or result message
- */
 export async function processWebhook(
   bookingId: string,
   status: string,
@@ -33,7 +24,6 @@ export async function processWebhook(
   }
 
   return withTransaction(async (db) => {
-    // 1. Check if this idempotency_key was already used for a different booking
     const existingIdem = await get<{ id: string }>(
       db,
       'SELECT id FROM bookings WHERE idempotency_key = ?',
@@ -49,7 +39,6 @@ export async function processWebhook(
       return { id: bookingId, state: 'UNKNOWN', message: 'duplicate webhook' };
     }
 
-    // 2. Fetch the booking
     const booking = await get<BookingRow>(db, 'SELECT * FROM bookings WHERE id = ?', [bookingId]);
 
     if (!booking) {
@@ -57,13 +46,11 @@ export async function processWebhook(
       return { id: bookingId, state: 'NOT_FOUND' };
     }
 
-    // 3. If already processed with same key, return current state (idempotent)
     if (booking.idempotency_key === idempotencyKey) {
       logger.info('Duplicate webhook processed idempotently', { bookingId, idempotencyKey });
       return booking;
     }
 
-    // 4. Only process if still in PENDING_PAYMENT state
     if (booking.state !== STATES.PENDING_PAYMENT) {
       logger.info('Webhook received for non-pending booking', {
         bookingId,
@@ -72,12 +59,10 @@ export async function processWebhook(
       return booking;
     }
 
-    // 5. Determine the event and next state
     const event = normalizedStatus === 'success' ? EVENTS.PAYMENT_SUCCESS : EVENTS.PAYMENT_FAILED;
     const nextState = transition(booking.state, event);
     const nowIso = new Date().toISOString();
 
-    // 6. If payment failed, release seats back to the trip
     if (nextState === STATES.EXPIRED) {
       await run(
         db,
@@ -91,7 +76,6 @@ export async function processWebhook(
       });
     }
 
-    // 7. Update booking with new state and idempotency key
     await run(
       db,
       `UPDATE bookings
@@ -112,7 +96,6 @@ export async function processWebhook(
       newState: nextState,
     });
 
-    // 8. Return updated booking
     const updated = await get<BookingRow>(db, 'SELECT * FROM bookings WHERE id = ?', [bookingId]);
     return updated!;
   });

@@ -20,15 +20,6 @@ interface TripWithBooked extends TripRow {
   booked: number;
 }
 
-/**
- * GET /admin/trips/:tripId/metrics
- * Get detailed metrics for a specific trip
- * 
- * Response includes:
- * - Occupancy percentage
- * - Booking counts by state
- * - Financial summary (gross, refunds, net)
- */
 router.get(
   '/admin/trips/:tripId/metrics',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -40,7 +31,6 @@ router.get(
         return res.status(404).json({ error: 'Trip not found' });
       }
 
-      // Aggregate bookings by state
       const stateAgg = await all<StateAggregation>(
         db,
         `SELECT state, SUM(num_seats) as seats, COUNT(*) as count
@@ -50,7 +40,6 @@ router.get(
         [req.params.tripId]
       );
 
-      // Calculate financial metrics
       const financial = await get<FinancialAggregation>(
         db,
         `SELECT
@@ -61,7 +50,6 @@ router.get(
         [req.params.tripId]
       );
 
-      // Build booking summary
       const summary = {
         confirmed: 0,
         pending_payment: 0,
@@ -76,7 +64,6 @@ router.get(
         if (row.state === 'EXPIRED') summary.expired = row.count;
       });
 
-      // Calculate occupancy
       const bookedSeats = trip.max_capacity - trip.available_seats;
       const occupancyPercent = Math.round((bookedSeats / trip.max_capacity) * 100);
 
@@ -102,14 +89,6 @@ router.get(
   }
 );
 
-/**
- * GET /admin/trips/at-risk
- * List trips that are at risk of low occupancy
- * 
- * Criteria:
- * - Departure within 7 days
- * - Occupancy less than 50%
- */
 router.get(
   '/admin/trips/at-risk',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -119,7 +98,6 @@ router.get(
       const inSevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
       const todayIso = now.toISOString();
 
-      // Find trips departing within 7 days
       const trips = await all<TripWithBooked>(
         db,
         `SELECT *, (max_capacity - available_seats) AS booked
@@ -128,7 +106,6 @@ router.get(
         [inSevenDays, todayIso]
       );
 
-      // Filter for low occupancy (< 50%)
       const atRisk = trips
         .map((t) => ({
           trip: t,

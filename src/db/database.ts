@@ -6,9 +6,6 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../../gotyolo.db');
 
 let dbInstance: sqlite3.Database | null = null;
 
-/**
- * Get or create the database connection
- */
 export function getDb(): sqlite3.Database {
   if (dbInstance) return dbInstance;
 
@@ -20,9 +17,6 @@ export function getDb(): sqlite3.Database {
   return dbInstance;
 }
 
-/**
- * Run all SQL migration files in order
- */
 function runMigrations(db: sqlite3.Database): void {
   const migrationsDir = path.join(__dirname, 'migrations');
   if (!fs.existsSync(migrationsDir)) return;
@@ -39,9 +33,6 @@ function runMigrations(db: sqlite3.Database): void {
   });
 }
 
-/**
- * Close the database connection
- */
 export function closeDb(): void {
   if (dbInstance) {
     dbInstance.close();

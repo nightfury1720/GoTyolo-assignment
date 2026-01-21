@@ -9,13 +9,6 @@ import { handleValidation } from '../middleware/validation';
 
 const router = Router();
 
-/**
- * GET /trips
- * List all published trips sorted by start date
- * Optional query parameters:
- * - status: Filter by status (DRAFT or PUBLISHED)
- * - destination: Filter by destination (partial match)
- */
 router.get('/trips', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = getDb();
@@ -28,7 +21,6 @@ router.get('/trips', async (req: Request, res: Response, next: NextFunction) => 
       query += ' AND status = ?';
       params.push(status as string);
     } else if (!status) {
-      // Default to PUBLISHED if no status filter
       query += ' AND status = ?';
       params.push('PUBLISHED');
     }
@@ -47,24 +39,6 @@ router.get('/trips', async (req: Request, res: Response, next: NextFunction) => 
   }
 });
 
-/**
- * POST /trips
- * Create a new trip (admin only, optional auth)
- * 
- * Request body:
- * - title: string - Trip name
- * - destination: string - Travel destination
- * - start_date: string - Trip start date (ISO 8601)
- * - end_date: string - Trip end date (ISO 8601)
- * - price: number - Price per seat
- * - max_capacity: number - Total seats available
- * - refundable_until_days_before: number - Days before trip when refund cutoff applies
- * - cancellation_fee_percent: number - Fee percentage (0-100)
- * - status: string (optional) - 'DRAFT' or 'PUBLISHED' (defaults to 'DRAFT')
- * 
- * Response:
- * - trip: Trip object
- */
 router.post(
   '/trips',
   [
@@ -92,10 +66,6 @@ router.post(
   }
 );
 
-/**
- * GET /trips/:id
- * Get details of a specific trip
- */
 router.get('/trips/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = getDb();

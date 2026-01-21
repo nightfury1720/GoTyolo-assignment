@@ -1,8 +1,5 @@
 import { BookingRow, BookingState, STATES } from '../types';
 
-/**
- * Booking model representing a user's trip reservation
- */
 export class Booking {
   id: string;
   trip_id: string;
@@ -34,23 +31,14 @@ export class Booking {
     this.updated_at = data.updated_at;
   }
 
-  /**
-   * Create a Booking instance from a database row
-   */
   static fromRow(row: BookingRow | undefined): Booking | null {
     return row ? new Booking(row) : null;
   }
 
-  /**
-   * Check if booking is in a terminal state
-   */
   isTerminal(): boolean {
     return this.state === STATES.CANCELLED || this.state === STATES.EXPIRED;
   }
 
-  /**
-   * Check if booking is expired based on expires_at timestamp
-   */
   isExpired(): boolean {
     if (!this.expires_at) {
       return false;
@@ -58,30 +46,18 @@ export class Booking {
     return new Date(this.expires_at) < new Date();
   }
 
-  /**
-   * Check if booking can be cancelled
-   */
   canBeCancelled(): boolean {
     return this.state === STATES.CONFIRMED || this.state === STATES.PENDING_PAYMENT;
   }
 
-  /**
-   * Check if booking is pending payment
-   */
   isPendingPayment(): boolean {
     return this.state === STATES.PENDING_PAYMENT;
   }
 
-  /**
-   * Check if booking is confirmed
-   */
   isConfirmed(): boolean {
     return this.state === STATES.CONFIRMED;
   }
 
-  /**
-   * Convert to JSON-friendly object
-   */
   toJSON() {
     return {
       id: this.id,

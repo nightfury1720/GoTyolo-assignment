@@ -1,8 +1,5 @@
 import { TripRow, TripStatus } from '../types';
 
-/**
- * Trip model representing a travel package
- */
 export class Trip {
   id: string;
   title: string;
@@ -34,30 +31,18 @@ export class Trip {
     this.updated_at = data.updated_at;
   }
 
-  /**
-   * Create a Trip instance from a database row
-   */
   static fromRow(row: TripRow | undefined): Trip | null {
     return row ? new Trip(row) : null;
   }
 
-  /**
-   * Check if trip is published and available for booking
-   */
   isBookable(): boolean {
     return this.status === 'PUBLISHED' && this.available_seats > 0;
   }
 
-  /**
-   * Check if trip has enough seats available
-   */
   hasAvailableSeats(numSeats: number): boolean {
     return this.available_seats >= numSeats;
   }
 
-  /**
-   * Calculate days until trip start
-   */
   daysUntilStart(): number {
     const startDate = new Date(this.start_date);
     const now = new Date();
@@ -66,17 +51,11 @@ export class Trip {
     return diffDays;
   }
 
-  /**
-   * Check if booking is refundable based on trip's refund policy
-   */
   isRefundable(): boolean {
     const daysUntilStart = this.daysUntilStart();
     return daysUntilStart > this.refundable_until_days_before;
   }
 
-  /**
-   * Calculate refund amount based on price and cancellation fee
-   */
   calculateRefund(priceAtBooking: number): number {
     if (!this.isRefundable()) {
       return 0;
@@ -85,9 +64,6 @@ export class Trip {
     return Number((priceAtBooking * refundPercent).toFixed(2));
   }
 
-  /**
-   * Convert to JSON-friendly object
-   */
   toJSON() {
     return {
       id: this.id,

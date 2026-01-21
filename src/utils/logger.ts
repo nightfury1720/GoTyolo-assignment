@@ -1,7 +1,3 @@
-/**
- * Simple logger utility for consistent logging across the application
- */
-
 type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
 interface LogEntry {

@@ -13,18 +13,10 @@ export interface CreateTripInput {
   max_capacity: number;
   refundable_until_days_before: number;
   cancellation_fee_percent: number;
-  status?: TripStatus; // Optional, defaults to 'DRAFT'
+  status?: TripStatus;
 }
 
-/**
- * Create a new trip.
- * Admin-only endpoint (authentication can be added later).
- * 
- * @param input - Trip creation data
- * @returns Created trip
- */
 export async function createTrip(input: CreateTripInput): Promise<Trip> {
-  // Validate dates
   const startDate = new Date(input.start_date);
   const endDate = new Date(input.end_date);
   const now = new Date();
@@ -41,17 +33,14 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
     throw new HttpError(400, 'end_date must be after start_date');
   }
 
-  // Validate price
   if (input.price <= 0) {
     throw new HttpError(400, 'price must be greater than 0');
   }
 
-  // Validate capacity
   if (input.max_capacity <= 0) {
     throw new HttpError(400, 'max_capacity must be greater than 0');
   }
 
-  // Validate refund policy
   if (input.refundable_until_days_before < 0) {
     throw new HttpError(400, 'refundable_until_days_before must be non-negative');
   }
@@ -60,7 +49,6 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
     throw new HttpError(400, 'cancellation_fee_percent must be between 0 and 100');
   }
 
-  // Validate status
   const status: TripStatus = input.status || 'DRAFT';
   if (status !== 'DRAFT' && status !== 'PUBLISHED') {
     throw new HttpError(400, 'status must be either "DRAFT" or "PUBLISHED"');
@@ -70,7 +58,6 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
   const nowIso = new Date().toISOString();
 
   return withTransaction(async (db) => {
-    // Insert the new trip
     await run(
       db,
       `INSERT INTO trips
@@ -85,7 +72,7 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
         input.end_date,
         input.price,
         input.max_capacity,
-        input.max_capacity, // available_seats starts equal to max_capacity
+        input.max_capacity,
         status,
         input.refundable_until_days_before,
         input.cancellation_fee_percent,
@@ -94,7 +81,6 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
       ]
     );
 
-    // Fetch and return the created trip
     const tripRow = await get<TripRow>(db, 'SELECT * FROM trips WHERE id = ?', [tripId]);
     if (!tripRow) {
       throw new HttpError(500, 'Failed to create trip');
@@ -104,9 +90,6 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
   });
 }
 
-/**
- * Get a trip by ID
- */
 export async function getTrip(tripId: string): Promise<Trip | null> {
   const db = getDb();
   const tripRow = await get<TripRow>(db, 'SELECT * FROM trips WHERE id = ?', [tripId]);
