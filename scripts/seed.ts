@@ -1,6 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { getDb } from '../src/db/database';
-import { withTransaction, run } from '../src/services/transaction';
+import { db } from '../src/db/database';
 import { STATES } from '../src/types';
 import { logger } from '../src/utils/logger';
 
@@ -28,11 +27,10 @@ interface BookingSeed {
 }
 
 async function seed(): Promise<void> {
-  getDb();
-
-  await withTransaction(async (db) => {
-    await run(db, 'DELETE FROM bookings');
-    await run(db, 'DELETE FROM trips');
+  const database = await db;
+  await database.transaction(async () => {
+    await database.run('DELETE FROM bookings');
+    await database.run('DELETE FROM trips');
 
     const now = new Date();
 
@@ -106,93 +104,30 @@ async function seed(): Promise<void> {
 
     for (const trip of trips) {
       const ts = new Date().toISOString();
-      await run(
-        db,
+      await database.run(
         `INSERT INTO trips
          (id, title, destination, start_date, end_date, price, max_capacity, available_seats, status,
           refundable_until_days_before, cancellation_fee_percent, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          trip.id,
-          trip.title,
-          trip.destination,
-          trip.start_date,
-          trip.end_date,
-          trip.price,
-          trip.max_capacity,
-          trip.available_seats,
-          trip.status,
-          trip.refundable_until_days_before,
-          trip.cancellation_fee_percent,
-          ts,
-          ts,
+          trip.id, trip.title, trip.destination, trip.start_date, trip.end_date,
+          trip.price, trip.max_capacity, trip.available_seats, trip.status,
+          trip.refundable_until_days_before, trip.cancellation_fee_percent, ts, ts,
         ]
       );
     }
 
     const sampleBookings: BookingSeed[] = [
-      {
-        trip: trips[0],
-        num_seats: 2,
-        state: STATES.CONFIRMED,
-        refund_amount: 0,
-      },
-      {
-        trip: trips[0],
-        num_seats: 3,
-        state: STATES.CONFIRMED,
-        refund_amount: 0,
-      },
-      {
-        trip: trips[0],
-        num_seats: 1,
-        state: STATES.PENDING_PAYMENT,
-        expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
-      },
-      {
-        trip: trips[1],
-        num_seats: 4,
-        state: STATES.EXPIRED,
-        expires_at: new Date(now.getTime() - 60 * 60 * 1000).toISOString(),
-      },
-      {
-        trip: trips[1],
-        num_seats: 2,
-        state: STATES.CANCELLED,
-        refund_amount: 1280,
-        cancelled_at: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-      },
-      {
-        trip: trips[2],
-        num_seats: 5,
-        state: STATES.CONFIRMED,
-        refund_amount: 0,
-      },
-      {
-        trip: trips[3],
-        num_seats: 3,
-        state: STATES.CONFIRMED,
-        refund_amount: 0,
-      },
-      {
-        trip: trips[3],
-        num_seats: 2,
-        state: STATES.PENDING_PAYMENT,
-        expires_at: new Date(now.getTime() + 12 * 60 * 1000).toISOString(),
-      },
-      {
-        trip: trips[4],
-        num_seats: 2,
-        state: STATES.CONFIRMED,
-        refund_amount: 0,
-      },
-      {
-        trip: trips[4],
-        num_seats: 1,
-        state: STATES.CANCELLED,
-        refund_amount: 0,
-        cancelled_at: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-      },
+      { trip: trips[0], num_seats: 2, state: STATES.CONFIRMED, refund_amount: 0 },
+      { trip: trips[0], num_seats: 3, state: STATES.CONFIRMED, refund_amount: 0 },
+      { trip: trips[0], num_seats: 1, state: STATES.PENDING_PAYMENT, expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString() },
+      { trip: trips[1], num_seats: 4, state: STATES.EXPIRED, expires_at: new Date(now.getTime() - 60 * 60 * 1000).toISOString() },
+      { trip: trips[1], num_seats: 2, state: STATES.CANCELLED, refund_amount: 1280, cancelled_at: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString() },
+      { trip: trips[2], num_seats: 5, state: STATES.CONFIRMED, refund_amount: 0 },
+      { trip: trips[3], num_seats: 3, state: STATES.CONFIRMED, refund_amount: 0 },
+      { trip: trips[3], num_seats: 2, state: STATES.PENDING_PAYMENT, expires_at: new Date(now.getTime() + 12 * 60 * 1000).toISOString() },
+      { trip: trips[4], num_seats: 2, state: STATES.CONFIRMED, refund_amount: 0 },
+      { trip: trips[4], num_seats: 1, state: STATES.CANCELLED, refund_amount: 0, cancelled_at: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000).toISOString() },
     ];
 
     for (const entry of sampleBookings) {
@@ -200,39 +135,22 @@ async function seed(): Promise<void> {
       const created = new Date().toISOString();
       const priceAt = entry.trip.price * entry.num_seats;
 
-      await run(
-        db,
+      await database.run(
         `INSERT INTO bookings
           (id, trip_id, user_id, num_seats, state, price_at_booking, created_at, expires_at, cancelled_at, refund_amount, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          entry.trip.id,
-          uuidv4(), // Random user ID
-          entry.num_seats,
-          entry.state,
-          priceAt,
-          created,
-          entry.expires_at || null,
-          entry.cancelled_at || null,
-          entry.refund_amount || null,
-          created,
-        ]
+        [id, entry.trip.id, uuidv4(), entry.num_seats, entry.state, priceAt, created, entry.expires_at || null, entry.cancelled_at || null, entry.refund_amount || null, created]
       );
 
       if (entry.state !== STATES.EXPIRED && entry.state !== STATES.CANCELLED) {
-        await run(
-          db,
+        await database.run(
           'UPDATE trips SET available_seats = available_seats - ?, updated_at = ? WHERE id = ?',
           [entry.num_seats, created, entry.trip.id]
         );
       }
     }
 
-    logger.info('Database seeded successfully', {
-      trips: trips.length,
-      bookings: sampleBookings.length,
-    });
+    logger.info('Database seeded successfully', { trips: trips.length, bookings: sampleBookings.length });
   });
 
   console.log('✅ Database seeded successfully!');

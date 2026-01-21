@@ -1,4 +1,4 @@
-import { withTransaction, get, run } from './transaction';
+import { db } from '../db/database';
 import { STATES, EVENTS, HttpError, BookingRow } from '../types';
 import { transition } from '../utils/stateMachine';
 import { logger } from '../utils/logger';
@@ -16,9 +16,8 @@ function daysUntil(dateStr: string): number {
 }
 
 export async function cancelBookingWithRefund(bookingId: string): Promise<BookingRow> {
-  return withTransaction(async (db) => {
-    const booking = await get<BookingWithTripDetails>(
-      db,
+  return db!.transaction(async () => {
+    const booking = await db!.get<BookingWithTripDetails>(
       `SELECT b.*, t.start_date, t.refundable_until_days_before, t.cancellation_fee_percent
        FROM bookings b
        JOIN trips t ON b.trip_id = t.id
@@ -42,14 +41,9 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
     }
 
     const event = refundable ? EVENTS.CANCEL_BEFORE_CUTOFF : EVENTS.CANCEL_AFTER_CUTOFF;
-    
-    if (booking.state === STATES.PENDING_PAYMENT) {
-      if (!refundable) {
-        throw new HttpError(409, 'Cannot cancel pending payment after cutoff');
-      }
-    } else {
-      transition(booking.state, event);
-    }
+    const nextState = booking.state === STATES.PENDING_PAYMENT
+      ? STATES.CANCELLED
+      : transition(booking.state, event);
 
     const feePercent = booking.cancellation_fee_percent || 0;
     const refundAmount = refundable
@@ -58,35 +52,21 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
 
     const nowIso = new Date().toISOString();
 
-    await run(
-      db,
-      `UPDATE bookings
-       SET state = ?, refund_amount = ?, cancelled_at = ?, updated_at = ?
-       WHERE id = ?`,
-      [STATES.CANCELLED, refundAmount, nowIso, nowIso, bookingId]
+    await db!.run(
+      `UPDATE bookings SET state = ?, refund_amount = ?, cancelled_at = ?, updated_at = ? WHERE id = ?`,
+      [nextState, refundAmount, nowIso, nowIso, bookingId]
     );
 
-    if (refundable) {
-      await run(
-        db,
-        'UPDATE trips SET available_seats = available_seats + ?, updated_at = ? WHERE id = ?',
-        [booking.num_seats, nowIso, booking.trip_id]
-      );
-      logger.info('Seats released after refundable cancellation', {
-        bookingId,
-        tripId: booking.trip_id,
-        numSeats: booking.num_seats,
-      });
-    }
+    await db!.run(
+      'UPDATE trips SET available_seats = available_seats + ?, updated_at = ? WHERE id = ?',
+      [booking.num_seats, nowIso, booking.trip_id]
+    );
 
     logger.info('Booking cancelled', {
-      bookingId,
-      refundable,
-      refundAmount,
-      daysUntilTrip: Math.round(daysLeft),
+      bookingId, refundable, refundAmount, daysUntilTrip: Math.round(daysLeft),
     });
 
-    const updated = await get<BookingRow>(db, 'SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    const updated = await db!.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     return updated!;
   });
 }

@@ -1,6 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { getDb } from '../db/database';
-import { get, all } from '../services/transaction';
+import { db } from '../db/database';
 import { TripRow, TripMetricsResponse, AtRiskTripsResponse } from '../types';
 
 const router = Router();
@@ -20,42 +19,29 @@ interface TripWithBooked extends TripRow {
   booked: number;
 }
 
-router.get(
-  '/admin/trips/:tripId/metrics',
-  async (req: Request, res: Response, next: NextFunction) => {
+router.get('/admin/trips/:tripId/metrics', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const db = getDb();
-      const trip = await get<TripRow>(db, 'SELECT * FROM trips WHERE id = ?', [req.params.tripId]);
+    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [req.params.tripId]);
       
       if (!trip) {
         return res.status(404).json({ error: 'Trip not found' });
       }
 
-      const stateAgg = await all<StateAggregation>(
-        db,
+    const stateAgg = await db!.all<StateAggregation>(
         `SELECT state, SUM(num_seats) as seats, COUNT(*) as count
-         FROM bookings
-         WHERE trip_id = ?
-         GROUP BY state`,
+       FROM bookings WHERE trip_id = ? GROUP BY state`,
         [req.params.tripId]
       );
 
-      const financial = await get<FinancialAggregation>(
-        db,
+    const financial = await db!.get<FinancialAggregation>(
         `SELECT
            SUM(CASE WHEN state IN ('CONFIRMED','CANCELLED') THEN price_at_booking ELSE 0 END) as gross,
            SUM(COALESCE(refund_amount, 0)) as refunds
-         FROM bookings
-         WHERE trip_id = ?`,
+       FROM bookings WHERE trip_id = ?`,
         [req.params.tripId]
       );
 
-      const summary = {
-        confirmed: 0,
-        pending_payment: 0,
-        cancelled: 0,
-        expired: 0,
-      };
+    const summary = { confirmed: 0, pending_payment: 0, cancelled: 0, expired: 0 };
 
       stateAgg.forEach((row) => {
         if (row.state === 'CONFIRMED') summary.confirmed = row.count;
@@ -86,20 +72,15 @@ router.get(
     } catch (err) {
       next(err);
     }
-  }
-);
+});
 
-router.get(
-  '/admin/trips/at-risk',
-  async (req: Request, res: Response, next: NextFunction) => {
+router.get('/admin/trips/at-risk', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const db = getDb();
       const now = new Date();
       const inSevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
       const todayIso = now.toISOString();
 
-      const trips = await all<TripWithBooked>(
-        db,
+    const trips = await db!.all<TripWithBooked>(
         `SELECT *, (max_capacity - available_seats) AS booked
          FROM trips
          WHERE start_date <= ? AND start_date >= ? AND status = 'PUBLISHED'`,
@@ -107,10 +88,7 @@ router.get(
       );
 
       const atRisk = trips
-        .map((t) => ({
-          trip: t,
-          occupancy: Math.round((t.booked / t.max_capacity) * 100),
-        }))
+      .map((t) => ({ trip: t, occupancy: Math.round((t.booked / t.max_capacity) * 100) }))
         .filter((t) => t.occupancy < 50)
         .map((t) => ({
           trip_id: t.trip.id,
@@ -125,7 +103,6 @@ router.get(
     } catch (err) {
       next(err);
     }
-  }
-);
+});
 
 export default router;

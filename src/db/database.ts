@@ -4,40 +4,101 @@ import * as path from 'path';
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../../gotyolo.db');
 
-let dbInstance: sqlite3.Database | null = null;
+class Database {
+  private db: sqlite3.Database;
 
-export function getDb(): sqlite3.Database {
-  if (dbInstance) return dbInstance;
+  private constructor(db: sqlite3.Database) {
+    this.db = db;
+  }
 
-  dbInstance = new sqlite3.Database(DB_PATH);
-  dbInstance.run('PRAGMA foreign_keys = ON');
-  dbInstance.run('PRAGMA journal_mode = WAL');
+  static async initialize(): Promise<Database> {
+    return new Promise((resolve, reject) => {
+      const rawDb = new sqlite3.Database(DB_PATH, async (err) => {
+        if (err) return reject(err);
+        try {
+          await Database.execRaw(rawDb, 'PRAGMA foreign_keys = ON');
+          await Database.execRaw(rawDb, 'PRAGMA journal_mode = WAL');
+          await Database.runMigrations(rawDb);
+          resolve(new Database(rawDb));
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+  }
 
-  runMigrations(dbInstance);
-  return dbInstance;
-}
+  private static execRaw(db: sqlite3.Database, sql: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      db.run(sql, [], (err) => (err ? reject(err) : resolve()));
+    });
+  }
 
-function runMigrations(db: sqlite3.Database): void {
-  const migrationsDir = path.join(__dirname, 'migrations');
-  if (!fs.existsSync(migrationsDir)) return;
+  private static async runMigrations(db: sqlite3.Database): Promise<void> {
+    const migrationsDir = path.join(__dirname, 'migrations');
+    if (!fs.existsSync(migrationsDir)) return;
 
-  const migrationFiles = fs
-    .readdirSync(migrationsDir)
-    .filter((file) => file.endsWith('.sql'))
-    .sort();
+    const migrationFiles = fs
+      .readdirSync(migrationsDir)
+      .filter((f) => f.endsWith('.sql'))
+      .sort();
 
-  migrationFiles.forEach((file) => {
-    const migrationPath = path.join(migrationsDir, file);
-    const sql = fs.readFileSync(migrationPath, 'utf-8');
-    db.exec(sql);
-  });
-}
+    for (const file of migrationFiles) {
+      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+      await Database.execRaw(db, sql);
+    }
+  }
 
-export function closeDb(): void {
-  if (dbInstance) {
-    dbInstance.close();
-    dbInstance = null;
+  run(sql: string, params: unknown[] = []): Promise<sqlite3.RunResult> {
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, params, function (err) {
+        if (err) return reject(err);
+        resolve(this);
+      });
+    });
+  }
+
+  get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+    return new Promise((resolve, reject) => {
+      this.db.get(sql, params, (err, row) => {
+        if (err) return reject(err);
+        resolve(row as T);
+      });
+    });
+  }
+
+  all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, params, (err, rows) => {
+        if (err) return reject(err);
+        resolve((rows || []) as T[]);
+      });
+    });
+  }
+
+  async transaction<T>(fn: (db: Database) => Promise<T>): Promise<T> {
+    await this.run('BEGIN IMMEDIATE');
+    try {
+      const result = await fn(this);
+      await this.run('COMMIT');
+      return result;
+    } catch (err) {
+      await this.run('ROLLBACK');
+      throw err;
+    }
+  }
+
+  close(): void {
+    this.db.close();
   }
 }
 
-export { DB_PATH };
+let db: Database | null = null;
+
+async function initializeDb(): Promise<void> {
+  if (db) {
+    return;
+  }
+  db = await Database.initialize();
+}
+
+export { db, Database, DB_PATH, initializeDb };

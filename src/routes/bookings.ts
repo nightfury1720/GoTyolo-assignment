@@ -1,8 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { body, param } from 'express-validator';
-import { createBooking, getBooking, HttpError } from '../services/bookingService';
+import { createBooking, getBooking } from '../services/bookingService';
 import { cancelBookingWithRefund } from '../services/refundService';
 import { handleValidation } from '../middleware/validation';
+import { HttpError } from '../types';
 
 const router = Router();
 

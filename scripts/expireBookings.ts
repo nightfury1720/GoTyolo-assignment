@@ -1,13 +1,12 @@
-import { getDb } from '../src/db/database';
 import { expirePendingBookings } from '../src/services/expiryService';
 import { logger } from '../src/utils/logger';
+import { initializeDb } from '../src/db/database';
 
 async function main(): Promise<void> {
-  getDb();
-  
   logger.info('Running manual expiry job...');
   
   try {
+    await initializeDb();
     await expirePendingBookings();
     logger.info('Expiry job completed successfully');
   } catch (err) {

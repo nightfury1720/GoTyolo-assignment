@@ -16,10 +16,7 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       logger.warn('Invalid webhook payload', { errors: errors.array(), body: req.body });
-      return res.status(200).json({ 
-        error: 'Invalid webhook payload',
-        errors: errors.array() 
-      });
+      return res.status(200).json({ error: 'Invalid webhook payload', errors: errors.array() });
     }
 
     const { booking_id, status, idempotency_key } = req.body;
@@ -27,30 +24,25 @@ router.post(
     if (!booking_id || !status || !idempotency_key) {
       logger.warn('Missing required webhook fields', { body: req.body });
       return res.status(200).json({ 
-        error: 'Missing required fields: booking_id, status, and idempotency_key are required' 
+        error: 'Missing required fields: booking_id, status, and idempotency_key are required',
       });
     }
 
     const normalizedStatus = status?.toLowerCase();
     if (!['success', 'failed'].includes(normalizedStatus)) {
       logger.warn('Invalid status value in webhook', { status, body: req.body });
-      return res.status(200).json({ 
-        error: 'Invalid status. Must be "success" or "failed"' 
-      });
+      return res.status(200).json({ error: 'Invalid status. Must be "success" or "failed"' });
     }
 
     try {
       logger.info('Received payment webhook', { booking_id, status, idempotency_key });
-      
       const result = await processWebhook(booking_id, status, idempotency_key);
-      
       res.status(200).json(result);
     } catch (err) {
       logger.error('Webhook processing error', {
         error: err instanceof Error ? err.message : 'Unknown error',
         body: req.body,
       });
-
       res.status(200).json({
         error: 'Processing error',
         detail: err instanceof Error ? err.message : 'Unknown error',

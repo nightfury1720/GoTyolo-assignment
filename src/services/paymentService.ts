@@ -1,4 +1,4 @@
-import { withTransaction, get, run } from './transaction';
+import { db } from '../db/database';
 import { STATES, EVENTS, HttpError, BookingRow } from '../types';
 import { transition } from '../utils/stateMachine';
 import { logger } from '../utils/logger';
@@ -23,9 +23,8 @@ export async function processWebhook(
     throw new HttpError(400, 'Invalid status. Must be "success" or "failed"');
   }
 
-  return withTransaction(async (db) => {
-    const existingIdem = await get<{ id: string }>(
-      db,
+  return db!.transaction(async () => {
+    const existingIdem = await db!.get<{ id: string }>(
       'SELECT id FROM bookings WHERE idempotency_key = ?',
       [idempotencyKey]
     );
@@ -39,7 +38,7 @@ export async function processWebhook(
       return { id: bookingId, state: 'UNKNOWN', message: 'duplicate webhook' };
     }
 
-    const booking = await get<BookingRow>(db, 'SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    const booking = await db!.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
 
     if (!booking) {
       logger.warn('Webhook received for non-existent booking', { bookingId });
@@ -52,10 +51,7 @@ export async function processWebhook(
     }
 
     if (booking.state !== STATES.PENDING_PAYMENT) {
-      logger.info('Webhook received for non-pending booking', {
-        bookingId,
-        currentState: booking.state,
-      });
+      logger.info('Webhook received for non-pending booking', { bookingId, currentState: booking.state });
       return booking;
     }
 
@@ -64,39 +60,23 @@ export async function processWebhook(
     const nowIso = new Date().toISOString();
 
     if (nextState === STATES.EXPIRED) {
-      await run(
-        db,
+      await db!.run(
         'UPDATE trips SET available_seats = available_seats + ?, updated_at = ? WHERE id = ?',
         [booking.num_seats, nowIso, booking.trip_id]
       );
       logger.info('Seats released due to payment failure', {
-        bookingId,
-        tripId: booking.trip_id,
-        numSeats: booking.num_seats,
+        bookingId, tripId: booking.trip_id, numSeats: booking.num_seats,
       });
     }
 
-    await run(
-      db,
-      `UPDATE bookings
-       SET state = ?, idempotency_key = ?, updated_at = ?, payment_reference = ?
-       WHERE id = ?`,
-      [
-        nextState,
-        idempotencyKey,
-        nowIso,
-        booking.payment_reference || idempotencyKey,
-        bookingId,
-      ]
+    await db!.run(
+      `UPDATE bookings SET state = ?, idempotency_key = ?, updated_at = ?, payment_reference = ? WHERE id = ?`,
+      [nextState, idempotencyKey, nowIso, booking.payment_reference || idempotencyKey, bookingId]
     );
 
-    logger.info('Payment webhook processed', {
-      bookingId,
-      status: normalizedStatus,
-      newState: nextState,
-    });
+    logger.info('Payment webhook processed', { bookingId, status: normalizedStatus, newState: nextState });
 
-    const updated = await get<BookingRow>(db, 'SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    const updated = await db!.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     return updated!;
   });
 }
