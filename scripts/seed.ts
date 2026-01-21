@@ -26,11 +26,10 @@ interface BookingSeed {
   cancelled_at?: string;
 }
 
-async function seed(): Promise<void> {
-  const database = await db;
-  await database.transaction(async () => {
-    await database.run('DELETE FROM bookings');
-    await database.run('DELETE FROM trips');
+export async function seed(): Promise<void> {
+  await db.transaction(async () => {
+    await db.run('DELETE FROM bookings');
+    await db.run('DELETE FROM trips');
 
     const now = new Date();
 
@@ -104,7 +103,7 @@ async function seed(): Promise<void> {
 
     for (const trip of trips) {
       const ts = new Date().toISOString();
-      await database.run(
+      await db.run(
         `INSERT INTO trips
          (id, title, destination, start_date, end_date, price, max_capacity, available_seats, status,
           refundable_until_days_before, cancellation_fee_percent, created_at, updated_at)
@@ -135,7 +134,7 @@ async function seed(): Promise<void> {
       const created = new Date().toISOString();
       const priceAt = entry.trip.price * entry.num_seats;
 
-      await database.run(
+      await db.run(
         `INSERT INTO bookings
           (id, trip_id, user_id, num_seats, state, price_at_booking, created_at, expires_at, cancelled_at, refund_amount, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -143,7 +142,7 @@ async function seed(): Promise<void> {
       );
 
       if (entry.state !== STATES.EXPIRED && entry.state !== STATES.CANCELLED) {
-        await database.run(
+        await db.run(
           'UPDATE trips SET available_seats = available_seats - ?, updated_at = ? WHERE id = ?',
           [entry.num_seats, created, entry.trip.id]
         );
@@ -158,7 +157,10 @@ async function seed(): Promise<void> {
   console.log(`   - ${10} bookings created`);
 }
 
-seed().catch((err) => {
-  console.error('❌ Seeding failed:', err.message);
-  process.exit(1);
-});
+// Run seed if this file is executed directly
+if (require.main === module) {
+  seed().catch((err) => {
+    console.error('❌ Seeding failed:', err.message);
+    process.exit(1);
+  });
+}
