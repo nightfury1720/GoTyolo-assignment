@@ -16,8 +16,8 @@ function daysUntil(dateStr: string): number {
 }
 
 export async function cancelBookingWithRefund(bookingId: string): Promise<BookingRow> {
-  return db!.transaction(async () => {
-    const booking = await db!.get<BookingWithTripDetails>(
+  return db.transaction(async () => {
+    const booking = await db.get<BookingWithTripDetails>(
       `SELECT b.*, t.start_date, t.refundable_until_days_before, t.cancellation_fee_percent
        FROM bookings b
        JOIN trips t ON b.trip_id = t.id
@@ -52,12 +52,12 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
 
     const nowIso = new Date().toISOString();
 
-    await db!.run(
+    await db.run(
       `UPDATE bookings SET state = ?, refund_amount = ?, cancelled_at = ?, updated_at = ? WHERE id = ?`,
       [nextState, refundAmount, nowIso, nowIso, bookingId]
     );
 
-    await db!.run(
+    await db.run(
       'UPDATE trips SET available_seats = available_seats + ?, updated_at = ? WHERE id = ?',
       [booking.num_seats, nowIso, booking.trip_id]
     );
@@ -66,7 +66,7 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
       bookingId, refundable, refundAmount, daysUntilTrip: Math.round(daysLeft),
     });
 
-    const updated = await db!.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    const updated = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     return updated!;
   });
 }

@@ -14,8 +14,8 @@ export async function createBooking(tripId: string, userId: string, numSeats: nu
   const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
   const bookingId = uuidv4();
 
-  return db!.transaction(async () => {
-    const tripRow = await db!.get<TripRow>(
+  return db.transaction(async () => {
+    const tripRow = await db.get<TripRow>(
       'SELECT * FROM trips WHERE id = ? AND status = ?',
       [tripId, 'PUBLISHED']
     );
@@ -29,7 +29,7 @@ export async function createBooking(tripId: string, userId: string, numSeats: nu
     const nowIso = now.toISOString();
     const expiresIso = expiresAt.toISOString();
 
-    const updateResult = await db!.run(
+    const updateResult = await db.run(
       'UPDATE trips SET available_seats = available_seats - ?, updated_at = ? WHERE id = ? AND available_seats >= ?',
       [numSeats, nowIso, tripId, numSeats]
     );
@@ -38,7 +38,7 @@ export async function createBooking(tripId: string, userId: string, numSeats: nu
       throw new HttpError(409, 'Not enough seats available');
     }
 
-    await db!.run(
+    await db.run(
       `INSERT INTO bookings
         (id, trip_id, user_id, num_seats, state, price_at_booking, created_at, expires_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -47,13 +47,13 @@ export async function createBooking(tripId: string, userId: string, numSeats: nu
 
     logger.info('Booking created', { bookingId, tripId, userId, numSeats });
 
-    const bookingRow = await db!.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    const bookingRow = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     return Booking.fromRow(bookingRow)!;
   });
 }
 
 export async function getBooking(bookingId: string): Promise<BookingRow | null> {
-  const row = await db!.get<BookingRow & { title: string; destination: string }>(
+  const row = await db.get<BookingRow & { title: string; destination: string }>(
     `SELECT b.*, t.title, t.destination, t.start_date, t.end_date
      FROM bookings b
      JOIN trips t ON b.trip_id = t.id

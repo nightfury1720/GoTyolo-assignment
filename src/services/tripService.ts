@@ -49,8 +49,8 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
   const tripId = uuidv4();
   const nowIso = new Date().toISOString();
 
-  return db!.transaction(async () => {
-    await db!.run(
+  return db.transaction(async () => {
+    await db.run(
       `INSERT INTO trips
        (id, title, destination, start_date, end_date, price, max_capacity, available_seats, status,
         refundable_until_days_before, cancellation_fee_percent, created_at, updated_at)
@@ -62,7 +62,7 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
       ]
     );
 
-    const tripRow = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
+    const tripRow = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
     if (!tripRow) {
       throw new HttpError(500, 'Failed to create trip');
     }
@@ -71,6 +71,6 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
 }
 
 export async function getTrip(tripId: string): Promise<Trip | null> {
-  const tripRow = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
+  const tripRow = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
   return Trip.fromRow(tripRow);
 }

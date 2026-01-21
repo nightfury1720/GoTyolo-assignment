@@ -17,7 +17,7 @@ async function runTests(): Promise<void> {
   console.log('🧪 Starting smoke tests...\n');
 
   await initializeDb();
-  const existingTrip = await db!.get<TripRow>(
+  const existingTrip = await db.get<TripRow>(
     "SELECT * FROM trips WHERE status = 'PUBLISHED' ORDER BY start_date ASC LIMIT 1"
   );
   assert(!!existingTrip, 'Expected at least one PUBLISHED trip (run seed first)');
@@ -29,8 +29,8 @@ async function runTests(): Promise<void> {
   const now = new Date();
   const ts = now.toISOString();
 
-  await db!.transaction(async () => {
-    await db!.run(
+  await db.transaction(async () => {
+    await db.run(
       `INSERT INTO trips
        (id, title, destination, start_date, end_date, price, max_capacity, available_seats, status,
         refundable_until_days_before, cancellation_fee_percent, created_at, updated_at)
@@ -58,7 +58,7 @@ async function runTests(): Promise<void> {
   assert(successes.length === 1, `Expected 1 success, got ${successes.length}`);
   assert(failures.length === 1, `Expected 1 failure, got ${failures.length}`);
 
-  const tripAfter = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
+  const tripAfter = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
   assert(tripAfter!.available_seats === 0, 'Expected available_seats=0 after one booking');
 
   console.log('✅ Concurrency test passed - Only one booking succeeded');
@@ -83,7 +83,7 @@ async function runTests(): Promise<void> {
   assert(cancelled.state === STATES.CANCELLED, 'Expected CANCELLED state');
   assert(Number(cancelled.refund_amount) === 90, `Expected refund 90.00, got ${cancelled.refund_amount}`);
 
-  const tripAfterCancel = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
+  const tripAfterCancel = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
   assert(tripAfterCancel!.available_seats === 1, 'Expected seat released back after refundable cancel');
 
   console.log('✅ Refund test passed - Correct amount calculated and seats released');
@@ -92,8 +92,8 @@ async function runTests(): Promise<void> {
 
   const pendingId = uuidv4();
 
-  await db!.transaction(async () => {
-    await db!.run('UPDATE trips SET available_seats = available_seats - 1, updated_at = ? WHERE id = ?', [
+  await db.transaction(async () => {
+    await db.run('UPDATE trips SET available_seats = available_seats - 1, updated_at = ? WHERE id = ?', [
       new Date().toISOString(),
       tripId,
     ]);
@@ -113,10 +113,10 @@ async function runTests(): Promise<void> {
 
   await expirePendingBookings();
 
-  const expired = await db!.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [pendingId]);
+  const expired = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [pendingId]);
   assert(expired!.state === STATES.EXPIRED, 'Expected booking EXPIRED after expiry job');
 
-  const tripAfterExpire = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
+  const tripAfterExpire = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
   assert(tripAfterExpire!.available_seats === 1, 'Expected seat released after expiry');
 
   console.log('✅ Auto-expiry test passed - Booking expired and seat released');

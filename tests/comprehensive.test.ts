@@ -94,13 +94,13 @@ async function runTests(): Promise<void> {
   });
 
   await test('Get trip details by ID', async () => {
-    const tripRow = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTripId]);
+    const tripRow = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTripId]);
     assert(!!tripRow, 'Trip should exist');
     assert(tripRow!.title === 'Test Trip - Barcelona', 'Trip title should match');
   });
 
   await test('List only published trips', async () => {
-    const trips = await db!.all<TripRow>(
+    const trips = await db.all<TripRow>(
       'SELECT * FROM trips WHERE status = ? ORDER BY start_date ASC',
       ['PUBLISHED']
     );
@@ -160,12 +160,12 @@ async function runTests(): Promise<void> {
     assert(booking.price_at_booking === 600 * 2, 'Price should be 600 * 2 = 1200');
     assert(!!booking.expires_at, 'Should have expires_at timestamp');
 
-    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
+    const trip = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
     assert(trip!.available_seats === 13, 'Available seats should be 15 - 2 = 13');
   });
 
   await test('Get booking details by ID', async () => {
-    const bookingRow = await db!.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId1]);
+    const bookingRow = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId1]);
     assert(!!bookingRow, 'Booking should exist');
     assert(bookingRow!.state === STATES.PENDING_PAYMENT, 'Booking state should be PENDING_PAYMENT');
     assert(bookingRow!.num_seats === 2, 'Should have 2 seats');
@@ -197,7 +197,7 @@ async function runTests(): Promise<void> {
 
     assert((result as BookingRow).state === STATES.CONFIRMED, 'Booking should be CONFIRMED');
 
-    const booking = await db!.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId1]);
+    const booking = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId1]);
     assert(booking!.state === STATES.CONFIRMED, 'Booking state should be CONFIRMED');
     assert(booking!.idempotency_key === idempotencyKey, 'Idempotency key should be stored');
   });
@@ -216,27 +216,27 @@ async function runTests(): Promise<void> {
   });
 
   await test('Process failed payment webhook', async () => {
-    const tripBefore = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
+    const tripBefore = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
     const seatsBefore = tripBefore!.available_seats;
 
     const booking = await createBooking(testTrip2Id, userId1, 1);
 
-    const tripAfterBooking = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
+    const tripAfterBooking = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
     assert(tripAfterBooking!.available_seats === seatsBefore - 1, 'Seat should be decremented on booking');
 
     const idempotencyKey = `webhook-fail-${uuidv4()}`;
     const result = await processWebhook(booking.id, 'failed', idempotencyKey);
     assert((result as BookingRow).state === STATES.EXPIRED, 'Booking should be EXPIRED on failure');
 
-    const tripAfterFailure = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
+    const tripAfterFailure = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
     assert(tripAfterFailure!.available_seats === seatsBefore, 'Seats should be released on payment failure');
   });
 
   await test('Auto-expire pending bookings after 15 minutes', async () => {
     const booking = await createBooking(testTrip2Id, userId1, 1);
 
-    await db!.transaction(async () => {
-      await db!.run(
+    await db.transaction(async () => {
+      await db.run(
         'UPDATE bookings SET expires_at = ? WHERE id = ?',
         [new Date(Date.now() - 60 * 60 * 1000).toISOString(), booking.id]
       );
@@ -244,10 +244,10 @@ async function runTests(): Promise<void> {
 
     await expirePendingBookings();
 
-    const expired = await db!.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [booking.id]);
+    const expired = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [booking.id]);
     assert(expired!.state === STATES.EXPIRED, 'Booking should be EXPIRED');
 
-    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
+    const trip = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [testTrip2Id]);
     assert(trip!.available_seats > 0, 'Seats should be released after expiry');
   });
 
@@ -275,7 +275,7 @@ async function runTests(): Promise<void> {
     assert(cancelled.state === STATES.CANCELLED, 'Booking should be CANCELLED');
     assertApprox(Number(cancelled.refund_amount), 1600, 0.01, 'Refund should be 1600');
 
-    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [refundableTrip.id]);
+    const trip = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [refundableTrip.id]);
     assert(trip!.available_seats === 10, 'Seats should be released');
   });
 
@@ -301,15 +301,15 @@ async function runTests(): Promise<void> {
     assert(cancelled.state === STATES.CANCELLED, 'Booking should be CANCELLED');
     assert(Number(cancelled.refund_amount) === 0, 'Refund should be 0 after cutoff');
 
-    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [nonRefundableTrip.id]);
+    const trip = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [nonRefundableTrip.id]);
     assert(trip!.available_seats === 4, 'Seats should NOT be released after cutoff');
   });
 
   await test('Reject cancellation of expired booking', async () => {
     const booking = await createBooking(testTrip2Id, userId1, 1);
 
-    await db!.transaction(async () => {
-      await db!.run(
+    await db.transaction(async () => {
+      await db.run(
         'UPDATE bookings SET state = ?, expires_at = ? WHERE id = ?',
         [STATES.EXPIRED, new Date(Date.now() - 60 * 60 * 1000).toISOString(), booking.id]
       );
@@ -362,8 +362,8 @@ async function runTests(): Promise<void> {
 
     await cancelBookingWithRefund(b1.id);
 
-    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [metricsTrip.id]);
-    const bookings = await db!.all<BookingRow>(
+    const trip = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [metricsTrip.id]);
+    const bookings = await db.all<BookingRow>(
       'SELECT * FROM bookings WHERE trip_id = ?',
       [metricsTrip.id]
     );
@@ -408,7 +408,7 @@ async function runTests(): Promise<void> {
     const inSevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const todayIso = now.toISOString();
 
-    const trips = await db!.all<TripRow & { booked: number }>(
+    const trips = await db.all<TripRow & { booked: number }>(
       `SELECT *, (max_capacity - available_seats) AS booked
        FROM trips
        WHERE start_date <= ? AND start_date >= ? AND status = 'PUBLISHED'`,
@@ -452,7 +452,7 @@ async function runTests(): Promise<void> {
     assert(successes.length === 1, `Expected 1 success, got ${successes.length}`);
     assert(failures.length === 1, `Expected 1 failure, got ${failures.length}`);
 
-    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [raceTrip.id]);
+    const trip = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [raceTrip.id]);
     assert(trip!.available_seats === 0, 'Available seats should be 0');
 
     assert(failures.length === 1, 'Should have exactly one failure');
@@ -489,10 +489,10 @@ async function runTests(): Promise<void> {
       await createBooking(concurrentTrip.id, userId, 1);
     }
 
-    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [concurrentTrip.id]);
+    const trip = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [concurrentTrip.id]);
     assert(trip!.available_seats === 5, 'Should have 5 seats remaining (10 - 5)');
     
-    const bookings = await db!.all<BookingRow>(
+    const bookings = await db.all<BookingRow>(
       'SELECT * FROM bookings WHERE trip_id = ?',
       [concurrentTrip.id]
     );

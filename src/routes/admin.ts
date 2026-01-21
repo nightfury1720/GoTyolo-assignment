@@ -21,19 +21,19 @@ interface TripWithBooked extends TripRow {
 
 router.get('/admin/trips/:tripId/metrics', async (req: Request, res: Response, next: NextFunction) => {
     try {
-    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [req.params.tripId]);
+    const trip = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [req.params.tripId]);
       
       if (!trip) {
         return res.status(404).json({ error: 'Trip not found' });
       }
 
-    const stateAgg = await db!.all<StateAggregation>(
+    const stateAgg = await db.all<StateAggregation>(
         `SELECT state, SUM(num_seats) as seats, COUNT(*) as count
        FROM bookings WHERE trip_id = ? GROUP BY state`,
         [req.params.tripId]
       );
 
-    const financial = await db!.get<FinancialAggregation>(
+    const financial = await db.get<FinancialAggregation>(
         `SELECT
            SUM(CASE WHEN state IN ('CONFIRMED','CANCELLED') THEN price_at_booking ELSE 0 END) as gross,
            SUM(COALESCE(refund_amount, 0)) as refunds
@@ -80,7 +80,7 @@ router.get('/admin/trips/at-risk', async (req: Request, res: Response, next: Nex
       const inSevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
       const todayIso = now.toISOString();
 
-    const trips = await db!.all<TripWithBooked>(
+    const trips = await db.all<TripWithBooked>(
         `SELECT *, (max_capacity - available_seats) AS booked
          FROM trips
          WHERE start_date <= ? AND start_date >= ? AND status = 'PUBLISHED'`,

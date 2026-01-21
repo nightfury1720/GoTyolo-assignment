@@ -29,7 +29,7 @@ router.get('/trips', async (req: Request, res: Response, next: NextFunction) => 
     
     query += ' ORDER BY start_date ASC';
     
-    const trips = await db!.all<TripRow>(query, params);
+    const trips = await db.all<TripRow>(query, params);
     res.json({ trips });
   } catch (err) {
     next(err);
@@ -65,7 +65,7 @@ router.post(
 
 router.get('/trips/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const trip = await db!.get<TripRow>('SELECT * FROM trips WHERE id = ?', [req.params.id]);
+    const trip = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [req.params.id]);
     
     if (!trip) {
       return res.status(404).json({ error: 'Trip not found' });

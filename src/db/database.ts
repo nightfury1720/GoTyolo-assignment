@@ -92,13 +92,26 @@ class Database {
   }
 }
 
-let db: Database | null = null;
+let dbInstance: Database | null = null;
 
 async function initializeDb(): Promise<void> {
-  if (db) {
+  if (dbInstance) {
     return;
   }
-  db = await Database.initialize();
+  dbInstance = await Database.initialize();
 }
+
+const db: Database = new Proxy({} as Database, {
+  get(_target, prop) {
+    if (!dbInstance) {
+      throw new Error('Database not initialized. Call initializeDb() first.');
+    }
+    const value = dbInstance[prop as keyof Database];
+    if (typeof value === 'function') {
+      return value.bind(dbInstance);
+    }
+    return value;
+  },
+});
 
 export { db, Database, DB_PATH, initializeDb };
