@@ -157,7 +157,6 @@ export async function seed(): Promise<void> {
   console.log(`   - ${10} bookings created`);
 }
 
-// Run seed if this file is executed directly
 if (require.main === module) {
   seed().catch((err) => {
     console.error('❌ Seeding failed:', err.message);

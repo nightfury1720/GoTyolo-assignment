@@ -46,7 +46,6 @@ async function clearDatabase(): Promise<void> {
 async function runTests(): Promise<void> {
   console.log('🧪 Starting smoke tests...\n');
 
-  // Check if API server is running
   try {
     const healthResponse = await fetch(`${API_BASE_URL}/health`);
     if (!healthResponse.ok) {
@@ -63,7 +62,6 @@ async function runTests(): Promise<void> {
 
   console.log('📋 SECTION 0: DATABASE SETUP & SEED VERIFICATION\n');
 
-  // Clear database
   await clearDatabase();
   const tripsBefore = await db.all('SELECT * FROM trips');
   const bookingsBefore = await db.all('SELECT * FROM bookings');
@@ -71,11 +69,9 @@ async function runTests(): Promise<void> {
   assert(bookingsBefore.length === 0, 'Bookings table should be empty');
   console.log('✅ Database cleared');
 
-  // Run seed script
   await seed();
   console.log('✅ Seed script executed');
 
-  // Verify seed data via API
   const response = await apiRequest('GET', '/api/trips');
   assert(Array.isArray(response.trips), 'Response should contain trips array');
   assert(response.trips.length >= 5, `Expected at least 5 trips, got ${response.trips.length}`);
@@ -86,7 +82,6 @@ async function runTests(): Promise<void> {
 
   console.log('📋 Test 1: Concurrency - Two users racing for last seat (via API)');
 
-  // Create a trip with 1 seat via API
   const now = new Date();
   const raceTripResponse = await apiRequest('POST', '/api/trips', {
     title: 'Concurrency Test Trip',
@@ -162,21 +157,17 @@ async function runTests(): Promise<void> {
 
   console.log('\n📋 Test 4: Auto-expiry of pending bookings (via API + DB for expiry)');
 
-  // Create a pending booking via API
   const pendingBookingResponse = await apiRequest('POST', `/api/trips/${tripId}/book`, {
     user_id: uuidv4(),
     num_seats: 1,
   });
   const pendingBooking = pendingBookingResponse.booking;
 
-  // Manually expire it via DB (expiry service is tested separately)
   await db.run(
     'UPDATE bookings SET expires_at = ? WHERE id = ?',
     [new Date(Date.now() - 60 * 60 * 1000).toISOString(), pendingBooking.id]
   );
 
-  // Note: Expiry service runs via cron, but for testing we can verify the booking exists
-  // In a real scenario, the expiry job would process it
   const expiredCheck = await apiRequest('GET', `/api/bookings/${pendingBooking.id}`);
   assert(expiredCheck.state === STATES.PENDING_PAYMENT, 'Booking should still be pending (expiry job not run in test)');
 

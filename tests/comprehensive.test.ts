@@ -63,7 +63,6 @@ async function runTests(): Promise<void> {
   console.log('🧪 Starting comprehensive tests for GoTyolo booking system...\n');
   console.log('='.repeat(80));
 
-  // Check if API server is running
   try {
     const healthResponse = await fetch(`${API_BASE_URL}/health`);
     if (!healthResponse.ok) {
@@ -95,7 +94,6 @@ async function runTests(): Promise<void> {
 
   console.log('\n📋 SECTION 0: DATABASE SETUP & SEED VERIFICATION\n');
 
-  // Clear database
   await test('Clear database', async () => {
     await clearDatabase();
     const trips = await db.all('SELECT * FROM trips');
@@ -104,18 +102,15 @@ async function runTests(): Promise<void> {
     assert(bookings.length === 0, 'Bookings table should be empty');
   });
 
-  // Run seed script
   await test('Run seed script', async () => {
     await runSeedScript();
   });
 
-  // Verify seed data via API
   await test('Verify seed data via API', async () => {
     const response = await apiRequest('GET', '/api/trips');
     assert(Array.isArray(response.trips), 'Response should contain trips array');
     assert(response.trips.length >= 5, `Expected at least 5 trips, got ${response.trips.length}`);
     
-    // Verify all trips are PUBLISHED (as per seed script)
     const allPublished = response.trips.every((t: any) => t.status === 'PUBLISHED');
     assert(allPublished, 'All seeded trips should be PUBLISHED');
     
@@ -410,7 +405,6 @@ async function runTests(): Promise<void> {
     assert(Number(cancelled.refund_amount) === 0, 'Refund should be 0 after cutoff');
 
     const trip = await apiRequest('GET', `/api/trips/${nonRefundableTrip.id}`);
-    // Note: Current implementation releases seats even after cutoff
     assert(trip.available_seats === 5, 'Seats are released after cancellation (even after cutoff)');
   });
 
@@ -421,7 +415,6 @@ async function runTests(): Promise<void> {
     });
     const booking = bookingResponse.booking;
 
-    // Manually expire the booking via DB (only for this edge case test)
     await db.run(
       'UPDATE bookings SET state = ?, expires_at = ? WHERE id = ?',
       [STATES.EXPIRED, new Date(Date.now() - 60 * 60 * 1000).toISOString(), booking.id]

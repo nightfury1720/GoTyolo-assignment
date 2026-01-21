@@ -33,7 +33,6 @@ function validateEnv(): void {
 async function startServer(): Promise<void> {
   validateEnv();
 
-  // Initialize database before starting the server
   logger.info('Initializing database...');
   await initializeDb();
   logger.info('Database initialized successfully');
