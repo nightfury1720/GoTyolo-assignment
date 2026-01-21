@@ -1,7 +1,8 @@
 import { db } from '../db/database';
-import { STATES, EVENTS, HttpError, BookingRow } from '../types';
+import { STATES, EVENTS, HttpError, BookingRow, ReservationRow } from '../types';
 import { transition } from '../utils/stateMachine';
 import { logger } from '../utils/logger';
+import { confirmReservationInternal } from './bookingService';
 
 interface WebhookResult {
   id: string;
@@ -55,26 +56,60 @@ export async function processWebhook(
       return booking;
     }
 
-    const event = normalizedStatus === 'success' ? EVENTS.PAYMENT_SUCCESS : EVENTS.PAYMENT_FAILED;
-    const nextState = transition(booking.state, event);
     const nowIso = new Date().toISOString();
 
-    if (nextState === STATES.EXPIRED) {
-      await db.run(
-        'UPDATE trips SET available_seats = available_seats + ?, updated_at = ? WHERE id = ?',
-        [booking.num_seats, nowIso, booking.trip_id]
+    if (normalizedStatus === 'success') {
+      try {
+        const reservation = await db.get<ReservationRow>(
+          'SELECT * FROM reservations WHERE booking_id = ?',
+          [bookingId]
+        );
+
+        if (reservation) {
+          await confirmReservationInternal(reservation.id);
+        } else {
+          await db.run(
+            'UPDATE trips SET available_seats = available_seats - ?, updated_at = ? WHERE id = ? AND available_seats >= ?',
+            [booking.num_seats, nowIso, booking.trip_id, booking.num_seats]
+          );
+
+          const event = EVENTS.PAYMENT_SUCCESS;
+          const nextState = transition(booking.state, event);
+          await db.run(
+            `UPDATE bookings SET state = ?, idempotency_key = ?, updated_at = ?, payment_reference = ? WHERE id = ?`,
+            [nextState, idempotencyKey, nowIso, booking.payment_reference || idempotencyKey, bookingId]
+          );
+
+          logger.info('Payment webhook processed (legacy path)', { bookingId, newState: nextState });
+        }
+      } catch (err) {
+        logger.error('Failed to confirm reservation on payment success', {
+          bookingId,
+          error: err instanceof Error ? err.message : 'Unknown error',
+        });
+        throw err;
+      }
+    } else {
+      const event = EVENTS.PAYMENT_FAILED;
+      const nextState = transition(booking.state, event);
+
+      const reservation = await db.get<ReservationRow>(
+        'SELECT * FROM reservations WHERE booking_id = ?',
+        [bookingId]
       );
-      logger.info('Seats released due to payment failure', {
-        bookingId, tripId: booking.trip_id, numSeats: booking.num_seats,
-      });
+
+      if (reservation) {
+        await db.run('DELETE FROM reservations WHERE id = ?', [reservation.id]);
+        logger.info('Reservation released due to payment failure', { reservationId: reservation.id });
+      }
+
+      await db.run(
+        `UPDATE bookings SET state = ?, idempotency_key = ?, updated_at = ?, payment_reference = ? WHERE id = ?`,
+        [nextState, idempotencyKey, nowIso, booking.payment_reference || idempotencyKey, bookingId]
+      );
+
+      logger.info('Payment webhook processed - payment failed', { bookingId, newState: nextState });
     }
-
-    await db.run(
-      `UPDATE bookings SET state = ?, idempotency_key = ?, updated_at = ?, payment_reference = ? WHERE id = ?`,
-      [nextState, idempotencyKey, nowIso, booking.payment_reference || idempotencyKey, bookingId]
-    );
-
-    logger.info('Payment webhook processed', { bookingId, status: normalizedStatus, newState: nextState });
 
     const updated = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     return updated!;

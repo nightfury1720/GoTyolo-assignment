@@ -10,6 +10,7 @@ GoTyolo is a travel booking system that handles:
 - ✅ Refund policies with cancellation fees
 - ✅ Auto-expiry of pending bookings (15 minutes)
 - ✅ Admin metrics and at-risk trip detection
+- ✅ Two-phase commit (2PC) booking protocol for concurrency safety
 - ✅ Concurrency-safe booking (prevents overbooking)
 
 ## 🚀 Quick Start
@@ -199,6 +200,7 @@ npm run test:smoke
 - **Framework:** Express.js
 - **Database:** SQLite (with `BEGIN IMMEDIATE` transactions for concurrency)
 - **Scheduling:** node-cron (auto-expiry job runs every minute)
+- **Concurrency Pattern:** Two-phase commit (2PC) for booking operations
 
 ### Project Structure
 
@@ -249,13 +251,25 @@ refund_amount = price_at_booking × (1 - cancellation_fee_percent / 100)
 
 **Implementation:** `src/services/refundService.ts`
 
-### 5. Database Concurrency Control
+### 5. Two-Phase Commit (2PC) for Bookings
+
+**Solution:** Implement a two-phase commit protocol to prevent overbooking during concurrent booking attempts. Phase 1 creates a "soft reservation" without decreasing available seats, allowing multiple users to check availability simultaneously. Phase 2 (triggered by successful payment) atomically decreases seat count and confirms the booking.
+
+**Benefits:**
+- Prevents race conditions between availability checks and payment processing
+- Allows concurrent booking attempts without blocking
+- Ensures atomicity: either all changes succeed or all fail
+- Supports idempotent payment processing
+
+**Implementation:** `src/services/bookingService.ts` implements `createReservation()` (Phase 1) and `confirmReservation()` (Phase 2). The `reservations` table tracks pending reservations until Phase 2 commits them.
+
+### 6. Database Concurrency Control
 
 **Solution:** SQLite's `BEGIN IMMEDIATE` transaction mode with application-level `withTransaction()` wrapper. This provides serializable isolation for critical operations.
 
 **Implementation:** `src/services/transaction.ts`
 
-### 6. Testing for Race Conditions
+### 7. Testing for Race Conditions
 
 **Approach:** The smoke test includes a concurrent booking test using `Promise.allSettled()` to race two booking attempts for a single-seat trip. Exactly one must succeed and one must fail with 409 Conflict.
 

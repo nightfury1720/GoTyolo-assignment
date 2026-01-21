@@ -1,5 +1,5 @@
 import { db } from '../db/database';
-import { STATES, EVENTS, HttpError, BookingRow } from '../types';
+import { STATES, EVENTS, HttpError, BookingRow, ReservationRow } from '../types';
 import { transition } from '../utils/stateMachine';
 import { logger } from '../utils/logger';
 
@@ -40,6 +40,11 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
       throw new HttpError(409, 'Cannot cancel pending payment after refund cutoff');
     }
 
+    const reservation = await db.get<ReservationRow>(
+      'SELECT * FROM reservations WHERE booking_id = ?',
+      [bookingId]
+    );
+
     const event = refundable ? EVENTS.CANCEL_BEFORE_CUTOFF : EVENTS.CANCEL_AFTER_CUTOFF;
     const nextState = booking.state === STATES.PENDING_PAYMENT
       ? STATES.CANCELLED
@@ -57,13 +62,33 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
       [nextState, refundAmount, nowIso, nowIso, bookingId]
     );
 
-    await db.run(
-      'UPDATE trips SET available_seats = available_seats + ?, updated_at = ? WHERE id = ?',
-      [booking.num_seats, nowIso, booking.trip_id]
-    );
+    if (booking.state === STATES.PENDING_PAYMENT) {
+      if (reservation) {
+        await db.run('DELETE FROM reservations WHERE id = ?', [reservation.id]);
+        logger.info('Reservation deleted on cancellation (never confirmed)', {
+          reservationId: reservation.id,
+          bookingId,
+        });
+      }
+    } else if (booking.state === STATES.CONFIRMED) {
+      await db.run(
+        'UPDATE trips SET available_seats = available_seats + ?, updated_at = ? WHERE id = ?',
+        [booking.num_seats, nowIso, booking.trip_id]
+      );
+      logger.info('Seats released on confirmed booking cancellation', {
+        bookingId,
+        tripId: booking.trip_id,
+        numSeats: booking.num_seats,
+      });
+    }
 
     logger.info('Booking cancelled', {
-      bookingId, refundable, refundAmount, daysUntilTrip: Math.round(daysLeft),
+      bookingId,
+      refundable,
+      refundAmount,
+      daysUntilTrip: Math.round(daysLeft),
+      hadReservation: !!reservation,
+      wasPending: booking.state === STATES.PENDING_PAYMENT,
     });
 
     const updated = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);

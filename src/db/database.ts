@@ -76,7 +76,7 @@ class Database {
   }
 
   async transaction<T>(fn: (db: Database) => Promise<T>): Promise<T> {
-    await this.run('BEGIN IMMEDIATE');
+    await this.run('BEGIN EXCLUSIVE');
     try {
       const result = await fn(this);
       await this.run('COMMIT');

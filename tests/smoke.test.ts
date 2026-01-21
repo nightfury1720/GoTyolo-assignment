@@ -38,6 +38,7 @@ async function apiRequest(method: string, path: string, body?: any): Promise<any
 
 async function clearDatabase(): Promise<void> {
   await db.transaction(async () => {
+    await db.run('DELETE FROM reservations');
     await db.run('DELETE FROM bookings');
     await db.run('DELETE FROM trips');
   });
@@ -117,8 +118,20 @@ async function runTests(): Promise<void> {
   assert(successes.length === 1, `Expected 1 success, got ${successes.length}`);
   assert(failures.length === 1, `Expected 1 failure, got ${failures.length}`);
 
+  // With 2PC: seats are NOT decremented until payment confirmation
+  const tripAfterBooking = await apiRequest('GET', `/api/trips/${tripId}`);
+  assert(tripAfterBooking.available_seats === 1, 'Expected available_seats=1 after booking (2PC Phase 1)');
+
+  // Confirm payment to trigger Phase 2 (seat decrement)
+  const bookingForPayment = (successes[0] as PromiseFulfilledResult<any>).value.booking;
+  await apiRequest('POST', '/api/payments/webhook', {
+    booking_id: bookingForPayment.id,
+    status: 'success',
+    idempotency_key: `smoke-${uuidv4()}`,
+  });
+
   const tripAfter = await apiRequest('GET', `/api/trips/${tripId}`);
-  assert(tripAfter.available_seats === 0, 'Expected available_seats=0 after one booking');
+  assert(tripAfter.available_seats === 0, 'Expected available_seats=0 after payment confirmation');
 
   console.log('✅ Concurrency test passed - Only one booking succeeded');
 

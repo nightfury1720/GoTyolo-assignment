@@ -51,6 +51,18 @@ export interface BookingRow {
   updated_at: string;
 }
 
+export interface ReservationRow {
+  id: string;
+  trip_id: string;
+  user_id: string;
+  num_seats: number;
+  price_at_reservation: number;
+  booking_id: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface BookingWithTrip extends BookingRow {
   title?: string;
   destination?: string;
