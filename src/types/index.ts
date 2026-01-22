@@ -63,37 +63,8 @@ export interface ReservationRow {
   updated_at: string;
 }
 
-export interface BookingWithTrip extends BookingRow {
-  title?: string;
-  destination?: string;
-  start_date?: string;
-  end_date?: string;
-  refundable_until_days_before?: number;
-  cancellation_fee_percent?: number;
-}
 
-export interface CreateBookingRequest {
-  user_id: string;
-  num_seats: number;
-}
 
-export interface CreateTripRequest {
-  title: string;
-  destination: string;
-  start_date: string;
-  end_date: string;
-  price: number;
-  max_capacity: number;
-  refundable_until_days_before: number;
-  cancellation_fee_percent: number;
-  status?: TripStatus;
-}
-
-export interface WebhookRequest {
-  booking_id: string;
-  status: 'success' | 'failed';
-  idempotency_key: string;
-}
 
 export interface TripMetricsResponse {
   trip_id: string;

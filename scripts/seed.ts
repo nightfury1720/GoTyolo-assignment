@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { db } from '../src/db/database';
+import { db, initializeDb } from '../src/db/database';
 import { STATES } from '../src/types';
 import { logger } from '../src/utils/logger';
 
@@ -27,7 +27,11 @@ interface BookingSeed {
 }
 
 export async function seed(): Promise<void> {
+  await initializeDb();
+
   await db.transaction(async () => {
+    // Delete in correct order to avoid foreign key constraints
+    await db.run('DELETE FROM reservations');
     await db.run('DELETE FROM bookings');
     await db.run('DELETE FROM trips');
 
@@ -130,7 +134,8 @@ export async function seed(): Promise<void> {
     ];
 
     for (const entry of sampleBookings) {
-      const id = uuidv4();
+      const bookingId = uuidv4();
+      const userId = uuidv4();
       const created = new Date().toISOString();
       const priceAt = entry.trip.price * entry.num_seats;
 
@@ -138,15 +143,23 @@ export async function seed(): Promise<void> {
         `INSERT INTO bookings
           (id, trip_id, user_id, num_seats, state, price_at_booking, created_at, expires_at, cancelled_at, refund_amount, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, entry.trip.id, uuidv4(), entry.num_seats, entry.state, priceAt, created, entry.expires_at || null, entry.cancelled_at || null, entry.refund_amount || null, created]
+        [bookingId, entry.trip.id, userId, entry.num_seats, entry.state, priceAt, created, entry.expires_at || null, entry.cancelled_at || null, entry.refund_amount || null, created]
       );
 
-      if (entry.state !== STATES.EXPIRED && entry.state !== STATES.CANCELLED) {
+      // For PENDING_PAYMENT bookings, create a reservation to hold the seats
+      if (entry.state === STATES.PENDING_PAYMENT) {
+        const reservationId = uuidv4();
+        const expiresAt = entry.expires_at || new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
         await db.run(
-          'UPDATE trips SET available_seats = available_seats - ?, updated_at = ? WHERE id = ?',
-          [entry.num_seats, created, entry.trip.id]
+          `INSERT INTO reservations
+            (id, trip_id, user_id, num_seats, price_at_reservation, booking_id, expires_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [reservationId, entry.trip.id, userId, entry.num_seats, priceAt, bookingId, expiresAt, created, created]
         );
       }
+      // For CONFIRMED bookings, we don't need reservations since seats are permanently allocated
+      // For EXPIRED/CANCELLED, reservations would have been cleaned up
     }
 
     logger.info('Database seeded successfully', { trips: trips.length, bookings: sampleBookings.length });

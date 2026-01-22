@@ -19,10 +19,10 @@ router.post(
     try {
       const { tripId } = req.params;
       const { user_id: userId, num_seats: numSeats } = req.body;
-      
+
       const booking = await createBooking(tripId, userId, numSeats);
       const payment_url = `https://payments.example.com/pay/${booking.id}`;
-      
+
       res.status(201).json({ booking: booking.toJSON(), payment_url });
     } catch (err) {
       if (err instanceof HttpError) {

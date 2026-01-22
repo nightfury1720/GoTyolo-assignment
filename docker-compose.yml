@@ -1,16 +1,32 @@
-version: '3.8'
-
 services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: gotyolo
+      POSTGRES_USER: gotyolo
+      POSTGRES_PASSWORD: gotyolo123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gotyolo -d gotyolo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   app:
     build: .
     ports:
       - "3000:3000"
-    volumes:
-      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - DB_PATH=/app/data/gotyolo.db
+      - DATABASE_URL=postgresql://gotyolo:gotyolo123@postgres:5432/gotyolo
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
@@ -18,3 +34,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+volumes:
+  postgres_data:

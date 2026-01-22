@@ -3,7 +3,7 @@ import { db } from '../db/database';
 import { HttpError, TripRow, TripStatus } from '../types';
 import { Trip } from '../models/Trip';
 
-export interface CreateTripInput {
+export async function createTrip(input: {
   title: string;
   destination: string;
   start_date: string;
@@ -13,9 +13,7 @@ export interface CreateTripInput {
   refundable_until_days_before: number;
   cancellation_fee_percent: number;
   status?: TripStatus;
-}
-
-export async function createTrip(input: CreateTripInput): Promise<Trip> {
+}): Promise<Trip> {
   const startDate = new Date(input.start_date);
   const endDate = new Date(input.end_date);
 
@@ -70,7 +68,3 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
   });
 }
 
-export async function getTrip(tripId: string): Promise<Trip | null> {
-  const tripRow = await db.get<TripRow>('SELECT * FROM trips WHERE id = ?', [tripId]);
-  return Trip.fromRow(tripRow);
-}

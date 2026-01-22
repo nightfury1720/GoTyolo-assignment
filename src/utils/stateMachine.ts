@@ -11,13 +11,5 @@ export function transition(currentState: BookingState, event: BookingEvent): Boo
   return nextState;
 }
 
-export function isTerminalState(state: BookingState): boolean {
-  return state === STATES.CANCELLED || state === STATES.EXPIRED;
-}
-
-export function canTransition(currentState: BookingState, event: BookingEvent): boolean {
-  const stateTransitions = TRANSITIONS[currentState];
-  return !!stateTransitions?.[event];
-}
 
 export { STATES, EVENTS };

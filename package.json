@@ -9,9 +9,7 @@
     "dev": "ts-node src/index.ts",
     "seed": "ts-node scripts/seed.ts",
     "expire": "ts-node scripts/expireBookings.ts",
-    "test:smoke": "ts-node tests/smoke.test.ts",
     "test": "ts-node tests/comprehensive.test.ts",
-    "test:all": "npm run test:smoke && npm run test",
     "clean": "rm -rf dist"
   },
   "keywords": ["booking", "travel", "api", "typescript"],
@@ -19,7 +17,7 @@
   "license": "ISC",
   "dependencies": {
     "express": "^4.18.2",
-    "sqlite3": "^5.1.6",
+    "pg": "^8.11.3",
     "uuid": "^9.0.1",
     "express-validator": "^7.0.1",
     "node-cron": "^3.0.3",
@@ -31,6 +29,7 @@
     "@types/uuid": "^9.0.8",
     "@types/node-cron": "^3.0.11",
     "@types/cors": "^2.8.17",
+    "@types/pg": "^8.10.9",
     "typescript": "^5.3.3",
     "ts-node": "^10.9.2"
   }

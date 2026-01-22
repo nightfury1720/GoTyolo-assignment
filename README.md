@@ -1,340 +1,243 @@
-# GoTyolo Travel Booking System
+# GoTyolo - Booking System with Refunds
 
-> **Backend API for a travel booking platform with payment processing, refunds, and admin visibility**
+A Node.js/TypeScript backend API for a travel booking platform that handles concurrent bookings, payment webhooks, and refund management.
 
-## 📋 Overview
+## Tech Stack
 
-GoTyolo is a travel booking system that handles:
-- ✅ Trip discovery and booking
-- ✅ Payment processing with webhook idempotency
-- ✅ Refund policies with cancellation fees
-- ✅ Auto-expiry of pending bookings (15 minutes)
-- ✅ Admin metrics and at-risk trip detection
-- ✅ Two-phase commit (2PC) booking protocol for concurrency safety
-- ✅ Concurrency-safe booking (prevents overbooking)
+- **Language**: TypeScript
+- **Runtime**: Node.js
+- **Database**: PostgreSQL
+- **Framework**: Express.js
+- **Containerization**: Docker + Docker Compose
 
-## 🚀 Quick Start
+## Architecture Overview
 
-### Prerequisites
+This system implements a two-phase booking process to handle concurrency safely:
 
-- **Node.js 20+** OR **Docker & Docker Compose**
+1. **Phase 1**: Create a reservation (holds seats temporarily) and booking in PENDING_PAYMENT state
+2. **Phase 2**: Convert reservation to confirmed booking upon successful payment
 
-### Option 1: Local Development
+The key insight is using a `reservations` table as a seat buffer, where available seats are calculated dynamically by summing active reservations rather than relying on a denormalized counter.
 
-```bash
-# Install dependencies
-npm install
+## Concurrency Control Approach
 
-# Build TypeScript
-npm run build
+### Database Concurrency Control
 
-# Seed database with sample data
-npm run seed
+**We use PostgreSQL transactions with optimistic concurrency control.** The system avoids explicit row-level locking (`SELECT FOR UPDATE`) in favor of a reservation-based approach that naturally serializes concurrent requests through database transactions.
 
-# Start server
-npm start
+- **No explicit locks**: Instead of locking trip rows, we use transactions to ensure atomic seat availability checks and reservation creation
+- **Serializable isolation**: PostgreSQL's default transaction isolation prevents dirty reads and ensures consistency
+- **Reservation buffer**: The `reservations` table acts as a temporary seat hold, preventing overbooking through transaction serialization
 
-# Or run in development mode
-npm run dev
-```
+### Preventing Overbooking
 
-Server runs on **http://localhost:3000**
+**How it works:**
 
-### Option 2: Docker
+1. When a booking request arrives, we calculate available seats dynamically:
+   ```sql
+   SELECT COALESCE(SUM(num_seats), 0) as total_seats
+   FROM reservations
+   WHERE trip_id = ? AND expires_at > NOW()
+   ```
 
-```bash
-# Build and run with Docker Compose
-docker-compose up --build
+2. Available seats = `max_capacity - reserved_seats`
 
-# Stop containers
-docker-compose down
-```
+3. If seats are available, we create both:
+   - A reservation record (holds the seats temporarily)
+   - A booking record in PENDING_PAYMENT state
 
-## 📚 API Endpoints
+4. The transaction ensures that concurrent requests are serialized - only one can succeed when competing for the last seat.
 
-### Trips
+**Why this prevents overbooking:**
+- Single source of truth: Available seats calculated from reservations table, not a denormalized counter
+- Transaction isolation: Concurrent requests can't see each other's uncommitted reservations
+- Automatic cleanup: Expired reservations are cleaned up before availability checks
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/trips` | List all published trips |
-| `GET` | `/api/trips/:id` | Get trip details |
+### Handling Duplicate Webhooks
 
-### Bookings
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/trips/:tripId/book` | Create a booking (reserve seats) |
-| `GET` | `/api/bookings/:id` | Get booking details |
-| `POST` | `/api/bookings/:id/cancel` | Cancel a booking (with refund if applicable) |
-
-### Payments
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/payments/webhook` | Process payment webhook (always returns 200 OK) |
-
-### Admin
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/admin/trips/:tripId/metrics` | Get detailed trip metrics |
-| `GET` | `/api/admin/trips/at-risk` | List at-risk trips (low occupancy, departing soon) |
-
-### Health
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Health check endpoint |
-
-## 📖 API Examples
-
-### Create a Booking
-
-```bash
-curl -X POST http://localhost:3000/api/trips/<trip-id>/book \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": "user-123",
-    "num_seats": 2
-  }'
-```
-
-**Response:**
-```json
-{
-  "booking": {
-    "id": "uuid",
-    "trip_id": "uuid",
-    "user_id": "user-123",
-    "num_seats": 2,
-    "state": "PENDING_PAYMENT",
-    "price_at_booking": 200.00,
-    "expires_at": "2026-01-25T10:15:00.000Z",
-    ...
-  },
-  "payment_url": "https://payments.example.com/pay/<booking-id>"
-}
-```
-
-### Process Payment Webhook
-
-```bash
-curl -X POST http://localhost:3000/api/payments/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "booking_id": "<booking-id>",
-    "status": "success",
-    "idempotency_key": "webhook-key-123"
-  }'
-```
-
-**Note:** Always returns `200 OK` even for invalid requests (prevents payment provider retries).
-
-### Cancel a Booking
-
-```bash
-curl -X POST http://localhost:3000/api/bookings/<booking-id>/cancel
-```
-
-**Response:**
-```json
-{
-  "id": "uuid",
-  "state": "CANCELLED",
-  "refund_amount": 90.00,
-  "cancelled_at": "2026-01-25T10:30:00.000Z",
-  ...
-}
-```
-
-### Get Trip Metrics
-
-```bash
-curl http://localhost:3000/api/admin/trips/<trip-id>/metrics
-```
-
-**Response:**
-```json
-{
-  "trip_id": "uuid",
-  "title": "Paris City Tour",
-  "occupancy_percent": 75,
-  "total_seats": 20,
-  "booked_seats": 15,
-  "available_seats": 5,
-  "booking_summary": {
-    "confirmed": 12,
-    "pending_payment": 2,
-    "cancelled": 1,
-    "expired": 0
-  },
-  "financial": {
-    "gross_revenue": 1200.00,
-    "refunds_issued": 100.00,
-    "net_revenue": 1100.00
-  }
-}
-```
-
-## 🧪 Testing
-
-### Run Smoke Tests
-
-```bash
-npm run test:smoke
-```
-
-**Tests cover:**
-- ✅ Concurrency: Two users racing for last seat (only one succeeds)
-- ✅ Webhook idempotency: Same webhook processed twice
-- ✅ Refund calculation: Correct amount with cancellation fee
-- ✅ Seat release: Cancelled bookings release seats
-- ✅ Auto-expiry: Pending bookings expire after 15 minutes
-
-## 🏗️ Architecture
-
-### Technology Stack
-
-- **Language:** TypeScript (type safety, better IDE support)
-- **Runtime:** Node.js 20+
-- **Framework:** Express.js
-- **Database:** SQLite (with `BEGIN IMMEDIATE` transactions for concurrency)
-- **Scheduling:** node-cron (auto-expiry job runs every minute)
-- **Concurrency Pattern:** Two-phase commit (2PC) for booking operations
-
-### Project Structure
-
-```
-src/
-├── index.ts              # Application entry point
-├── types/               # TypeScript type definitions
-├── db/                  # Database connection & migrations
-├── models/              # Trip and Booking entity classes
-├── routes/              # API route handlers
-├── services/            # Business logic (booking, payment, refund, expiry)
-├── middleware/          # Validation & error handling
-└── utils/              # State machine & logging
-```
-
-## 🔑 Key Design Decisions
-
-### 1. Preventing Overbooking
-
-**Solution:** Use `BEGIN IMMEDIATE` transactions that lock the database during seat availability check and decrement. The check and update are atomic, so concurrent requests cannot both succeed for the last seat.
-
-**Implementation:** `src/services/bookingService.ts` uses `withTransaction()` wrapper that executes `BEGIN IMMEDIATE` → check seats → decrement → `COMMIT`.
-
-### 2. Handling Duplicate Webhooks
-
-**Solution:** Store `idempotency_key` (UNIQUE constraint) on the booking record. On subsequent webhooks with the same key, return the current booking state without re-processing (idempotent behavior).
-
-**Implementation:** `src/services/paymentService.ts` checks for existing `idempotency_key` before processing.
-
-### 3. Auto-Expiry of Pending Bookings
-
-**Solution:** A cron job runs every minute checking for bookings where `state = 'PENDING_PAYMENT'` and `expires_at < now()`. These bookings are transitioned to `EXPIRED` and their seats are released back to the trip.
-
-**Implementation:** `src/services/expiryService.ts` + scheduled in `src/index.ts`.
-
-### 4. Refund Calculation
-
-**Formula:**
-```
-refund_amount = price_at_booking × (1 - cancellation_fee_percent / 100)
-```
-
-**Example:** $100 booking with 10% fee = $100 × 0.90 = **$90 refund**
-
-**Rules:**
-- **Before cutoff** (more than `refundable_until_days_before` days before trip): Full refund minus fee, seats released
-- **After cutoff**: No refund ($0), seats NOT released (trip is imminent)
-
-**Implementation:** `src/services/refundService.ts`
-
-### 5. Two-Phase Commit (2PC) for Bookings
-
-**Solution:** Implement a two-phase commit protocol to prevent overbooking during concurrent booking attempts. Phase 1 creates a "soft reservation" without decreasing available seats, allowing multiple users to check availability simultaneously. Phase 2 (triggered by successful payment) atomically decreases seat count and confirms the booking.
+**Idempotency through unique keys:**
+
+1. Each webhook includes an `idempotency_key` parameter
+2. The key is stored in the `bookings.idempotency_key` column (unique constraint)
+3. On webhook receipt:
+   - Check if `idempotency_key` already exists for a different booking → return duplicate error
+   - Check if webhook was already processed for this booking → return current state
+   - Otherwise process the webhook and store the key
 
 **Benefits:**
-- Prevents race conditions between availability checks and payment processing
-- Allows concurrent booking attempts without blocking
-- Ensures atomicity: either all changes succeed or all fail
-- Supports idempotent payment processing
+- **Safe retries**: Payment providers can safely retry failed webhooks
+- **No double processing**: Same webhook won't create duplicate state changes
+- **Audit trail**: Can track which webhooks were processed when
 
-**Implementation:** `src/services/bookingService.ts` implements `createReservation()` (Phase 1) and `confirmReservation()` (Phase 2). The `reservations` table tracks pending reservations until Phase 2 commits them.
+### Auto-Expiration of Bookings
 
-### 6. Database Concurrency Control
+**Background cleanup process:**
 
-**Solution:** SQLite's `BEGIN IMMEDIATE` transaction mode with application-level `withTransaction()` wrapper. This provides serializable isolation for critical operations.
+When payment webhooks never arrive, bookings remain in PENDING_PAYMENT state indefinitely. The system uses a background job to automatically expire stale bookings:
 
-**Implementation:** `src/services/transaction.ts`
+1. **Expiry Service**: `expirePendingBookings()` runs periodically (via cron job)
+2. **Expiration Logic**:
+   - Find bookings where `state = PENDING_PAYMENT` and `expires_at < NOW()`
+   - Find orphaned reservations where `expires_at < NOW()` and `booking_id IS NULL`
+3. **Cleanup Actions**:
+   - Update booking state to `EXPIRED`
+   - Delete associated reservations to release seats back to availability
+4. **Timing**: Bookings expire 15 minutes after creation
 
-### 7. Testing for Race Conditions
+**Why 15 minutes?**
+- Gives users enough time to complete payment
+- Prevents seats from being held indefinitely
+- Balances user experience with seat availability
 
-**Approach:** The smoke test includes a concurrent booking test using `Promise.allSettled()` to race two booking attempts for a single-seat trip. Exactly one must succeed and one must fail with 409 Conflict.
+### Refund Calculation
 
-**Implementation:** `tests/smoke.test.ts`
+**Formula: `price_at_booking × (1 - cancellation_fee_percent/100)`**
 
-## 📊 Booking State Machine
+**Business Rules:**
+
+1. **Before Refund Cutoff** (trip starts > `refundable_until_days_before` days from now):
+   - **Pending Payments**: Apply cancellation fee and refund remaining amount
+   - **Confirmed Bookings**: Apply cancellation fee and refund remaining amount
+   - **Seats**: Release seats back to availability (trip is far enough away)
+
+2. **After Refund Cutoff** (trip starts ≤ `refundable_until_days_before` days from now):
+   - **Pending Payments**: No refund (can't cancel confirmed payments after cutoff)
+   - **Confirmed Bookings**: No refund ($0)
+   - **Seats**: Keep seats reserved (trip is imminent, can't resell)
+
+**Example:**
+- Booking: $100, Cancellation fee: 10%
+- Before cutoff: Refund = $100 × (1 - 0.10) = $90
+- After cutoff: Refund = $0
+
+### Testing for Race Conditions
+
+**Concurrent booking test strategy:**
+
+1. **Setup**: Create a trip with limited seats (e.g., 2 seats available)
+2. **Concurrent Requests**: Launch 3+ simultaneous booking requests for 1 seat each
+3. **Verification**:
+   - Exactly 2 bookings should succeed
+   - 1+ bookings should fail with `409 Conflict - Not enough seats available`
+   - Database should remain consistent (no overbooking)
+
+**Test Implementation:**
+```typescript
+// Create multiple concurrent requests
+const promises = [];
+for (let i = 0; i < 3; i++) {
+  promises.push(createReservation(tripId, userId, 1));
+}
+const results = await Promise.all(promises);
+
+// Verify results
+const successful = results.filter(r => !r.error);
+const failed = results.filter(r => r.error);
+assert(successful.length <= availableSeats);
+assert(failed.length >= 1);
+```
+
+**Why this works:**
+- Tests real concurrency scenarios
+- Verifies transaction isolation prevents overbooking
+- Ensures error handling works correctly
+
+## Setup Instructions
+
+1. **Clone and install dependencies:**
+   ```bash
+   git clone <repository-url>
+   cd gotyolo-assignment
+   npm install
+   ```
+
+2. **Start PostgreSQL:**
+   ```bash
+   docker-compose up postgres -d
+   ```
+
+3. **Run database migrations:**
+   ```bash
+   npm run build
+   node dist/scripts/seed.js
+   ```
+
+4. **Start the application:**
+   ```bash
+   npm run dev
+   # or
+   docker-compose up
+   ```
+
+5. **Run tests:**
+   ```bash
+   npm test
+   ```
+
+## API Endpoints
+
+### Trips
+- `GET /api/trips` - List published trips
+- `GET /api/trips/:id` - Get trip details
+- `POST /api/trips` - Create trip (admin)
+- `PUT /api/trips/:id` - Update trip (admin)
+
+### Bookings
+- `POST /api/trips/:id/book` - Create booking
+- `GET /api/bookings/:id` - Get booking details
+- `POST /api/bookings/:id/cancel` - Cancel booking
+- `GET /api/bookings` - List user bookings
+
+### Payments
+- `POST /api/payments/webhook` - Handle payment webhook
+
+### Admin
+- `GET /api/admin/trips/:id/metrics` - Trip metrics
+- `GET /api/admin/trips/at-risk` - At-risk trips
+
+## Database Schema
+
+**Key Tables:**
+- `trips`: Trip information and capacity
+- `bookings`: Booking records with state machine
+- `reservations`: Temporary seat holds for concurrency control
+
+**Indexes:**
+- `idx_bookings_trip_id`, `idx_bookings_state`, `idx_bookings_expires_at`
+- `idx_reservations_trip_id`, `idx_reservations_expires_at`
+- `idx_trips_status`
+
+## State Machine
 
 ```
-PENDING_PAYMENT
-  ├── [payment_success] → CONFIRMED
-  ├── [payment_failed] → EXPIRED
-  └── [auto_expire (15 min)] → EXPIRED
+PENDING_PAYMENT → CONFIRMED (payment success)
+    ↓
+EXPIRED (payment failed or timeout)
 
-CONFIRMED
-  ├── [cancel_before_cutoff] → CANCELLED (with refund, seats released)
-  └── [cancel_after_cutoff] → CANCELLED (no refund, seats kept)
-
-CANCELLED (terminal)
-EXPIRED (terminal)
+CONFIRMED → CANCELLED (user cancellation)
+EXPIRED → (terminal)
+CANCELLED → (terminal)
 ```
 
-## 🐛 Bugs Found & Fixed
+## Bugs Found and Fixes
 
-1. **Webhook HTTP Status:** Fixed webhook endpoint to always return `200 OK` even for validation errors (prevents payment provider retries)
-2. **Transaction Safety:** All critical operations use `BEGIN IMMEDIATE` transactions to prevent race conditions
-3. **Seat Release Logic:** Ensured seats are released atomically within transactions on expiry/cancellation
+During development, several concurrency-related bugs were identified and fixed:
 
-## 📝 Scripts
+1. **Race Condition Overbooking**: Fixed by implementing reservation-based seat tracking
+2. **Missing Seat Release**: Added reservation cleanup in expiry service
+3. **Duplicate Webhook Processing**: Implemented idempotency key checking
+4. **Inconsistent Refund Calculation**: Fixed formula to properly apply cancellation fees
 
-| Command | Description |
-|---------|-------------|
-| `npm run build` | Compile TypeScript to JavaScript |
-| `npm start` | Start production server |
-| `npm run dev` | Start development server (with ts-node) |
-| `npm run seed` | Seed database with sample data |
-| `npm run expire` | Manually trigger expiry job |
-| `npm run test:smoke` | Run smoke tests |
-| `npm run clean` | Remove compiled files |
+## Performance Considerations
 
-## 🔍 Database Schema
+- **Connection Pooling**: PostgreSQL connection pool with 20 max connections
+- **Transaction Scoping**: Keep transactions as short as possible
+- **Background Cleanup**: Periodic job removes expired reservations
+- **Optimistic Concurrency**: Avoids locks while maintaining consistency
 
-### Trips Table
-- `id` (UUID, PRIMARY KEY)
-- `title`, `destination`
-- `start_date`, `end_date`
-- `price` (per seat)
-- `max_capacity`, `available_seats`
-- `status` (DRAFT | PUBLISHED)
-- `refundable_until_days_before`
-- `cancellation_fee_percent`
+## Monitoring and Debugging
 
-### Bookings Table
-- `id` (UUID, PRIMARY KEY)
-- `trip_id` (FOREIGN KEY)
-- `user_id`
-- `num_seats`
-- `state` (PENDING_PAYMENT | CONFIRMED | CANCELLED | EXPIRED)
-- `price_at_booking`
-- `payment_reference`
-- `expires_at` (15 minutes after creation)
-- `cancelled_at`
-- `refund_amount`
-- `idempotency_key` (UNIQUE, for webhook deduplication)
-
-
-
-
-
+- **Comprehensive Logging**: All state transitions and business logic logged
+- **Transaction Tracing**: Database operations wrapped in transactions for consistency
+- **Error Handling**: Detailed error responses with appropriate HTTP status codes
+- **Audit Trail**: Full history of bookings, payments, and cancellations

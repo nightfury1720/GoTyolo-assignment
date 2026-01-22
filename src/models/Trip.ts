@@ -35,13 +35,6 @@ export class Trip {
     return row ? new Trip(row) : null;
   }
 
-  isBookable(): boolean {
-    return this.status === 'PUBLISHED' && this.available_seats > 0;
-  }
-
-  hasAvailableSeats(numSeats: number): boolean {
-    return this.available_seats >= numSeats;
-  }
 
   daysUntilStart(): number {
     const startDate = new Date(this.start_date);

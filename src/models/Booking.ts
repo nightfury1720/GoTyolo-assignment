@@ -35,28 +35,6 @@ export class Booking {
     return row ? new Booking(row) : null;
   }
 
-  isTerminal(): boolean {
-    return this.state === STATES.CANCELLED || this.state === STATES.EXPIRED;
-  }
-
-  isExpired(): boolean {
-    if (!this.expires_at) {
-      return false;
-    }
-    return new Date(this.expires_at) < new Date();
-  }
-
-  canBeCancelled(): boolean {
-    return this.state === STATES.CONFIRMED || this.state === STATES.PENDING_PAYMENT;
-  }
-
-  isPendingPayment(): boolean {
-    return this.state === STATES.PENDING_PAYMENT;
-  }
-
-  isConfirmed(): boolean {
-    return this.state === STATES.CONFIRMED;
-  }
 
   toJSON() {
     return {

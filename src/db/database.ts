@@ -1,117 +1,137 @@
-import sqlite3 from 'sqlite3';
+import { Pool, PoolClient, QueryResult } from 'pg';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../../gotyolo.db');
+export const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://gotyolo:gotyolo123@postgres:5432/gotyolo';
 
-class Database {
-  private db: sqlite3.Database;
+// Convert SQLite-style ? placeholders to PostgreSQL $1, $2, $3... format
+function convertPlaceholders(sql: string): string {
+    let paramIndex = 1;
+    return sql.replace(/\?/g, () => `$${paramIndex++}`);
+}
 
-  private constructor(db: sqlite3.Database) {
-    this.db = db;
-  }
+export class Database {
+    private pool: Pool;
 
-  static async initialize(): Promise<Database> {
-    return new Promise((resolve, reject) => {
-      const rawDb = new sqlite3.Database(DB_PATH, async (err) => {
-        if (err) return reject(err);
+    private constructor(pool: Pool) {
+        this.pool = pool;
+    }
+
+    static async initialize(): Promise<Database> {
+        const pool = new Pool({
+            connectionString: DATABASE_URL,
+            max: 20, // Maximum number of clients in the pool
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 2000,
+        });
+
+        // Test the connection
+        const client = await pool.connect();
         try {
-          await Database.execRaw(rawDb, 'PRAGMA foreign_keys = ON');
-          await Database.execRaw(rawDb, 'PRAGMA journal_mode = WAL');
-          await Database.runMigrations(rawDb);
-          resolve(new Database(rawDb));
-        } catch (e) {
-          reject(e);
+            await client.query('SELECT 1');
+            await Database.runMigrations(client);
+        } finally {
+            client.release();
         }
-      });
-    });
-  }
 
-  private static execRaw(db: sqlite3.Database, sql: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      db.run(sql, [], (err) => (err ? reject(err) : resolve()));
-    });
-  }
-
-  private static async runMigrations(db: sqlite3.Database): Promise<void> {
-    const migrationsDir = path.join(__dirname, 'migrations');
-    if (!fs.existsSync(migrationsDir)) return;
-
-    const migrationFiles = fs
-      .readdirSync(migrationsDir)
-      .filter((f) => f.endsWith('.sql'))
-      .sort();
-
-    for (const file of migrationFiles) {
-      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-      await Database.execRaw(db, sql);
+        return new Database(pool);
     }
-  }
 
-  run(sql: string, params: unknown[] = []): Promise<sqlite3.RunResult> {
-    return new Promise((resolve, reject) => {
-      this.db.run(sql, params, function (err) {
-        if (err) return reject(err);
-        resolve(this);
-      });
-    });
-  }
+    private static async runMigrations(client: PoolClient): Promise<void> {
+        const migrationsDir = path.join(__dirname, 'migrations');
+        if (!fs.existsSync(migrationsDir)) return;
 
-  get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    return new Promise((resolve, reject) => {
-      this.db.get(sql, params, (err, row) => {
-        if (err) return reject(err);
-        resolve(row as T);
-      });
-    });
-  }
+        const migrationFiles = fs
+            .readdirSync(migrationsDir)
+            .filter((f) => f.endsWith('.sql'))
+            .sort();
 
-  all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    return new Promise((resolve, reject) => {
-      this.db.all(sql, params, (err, rows) => {
-        if (err) return reject(err);
-        resolve((rows || []) as T[]);
-      });
-    });
-  }
-
-  async transaction<T>(fn: (db: Database) => Promise<T>): Promise<T> {
-    await this.run('BEGIN EXCLUSIVE');
-    try {
-      const result = await fn(this);
-      await this.run('COMMIT');
-      return result;
-    } catch (err) {
-      await this.run('ROLLBACK');
-      throw err;
+        for (const file of migrationFiles) {
+            const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+            await client.query(sql);
+        }
     }
-  }
 
-  close(): void {
-    this.db.close();
-  }
+    run(sql: string, params: unknown[] = []): Promise<QueryResult> {
+        return this.pool.query(convertPlaceholders(sql), params);
+    }
+
+    get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+        return this.pool.query(convertPlaceholders(sql), params).then(result => result.rows[0] || undefined);
+    }
+
+    all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+        return this.pool.query(convertPlaceholders(sql), params).then(result => result.rows);
+    }
+
+    async transaction<T>(fn: (db: TransactionDatabase) => Promise<T>): Promise<T> {
+        const client = await this.pool.connect();
+        try {
+            await client.query('BEGIN');
+            const result = await fn(new TransactionDatabase(client));
+            await client.query('COMMIT');
+            return result;
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    close(): void {
+        this.pool.end();
+    }
+}
+
+// Wrapper for transaction client
+export class TransactionDatabase {
+    private client: PoolClient;
+
+    constructor(client: PoolClient) {
+        this.client = client;
+    }
+
+    run(sql: string, params: unknown[] = []): Promise<QueryResult> {
+        return this.client.query(convertPlaceholders(sql), params);
+    }
+
+    get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+        return this.client.query(convertPlaceholders(sql), params).then(result => result.rows[0] || undefined);
+    }
+
+    all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+        return this.client.query(convertPlaceholders(sql), params).then(result => result.rows);
+    }
+
+    // Override transaction to prevent nested transactions
+    async transaction<T>(fn: (db: TransactionDatabase) => Promise<T>): Promise<T> {
+        return fn(this);
+    }
+
+    close(): void {
+        // Don't close the client in transactions
+    }
 }
 
 let dbInstance: Database | null = null;
 
-async function initializeDb(): Promise<void> {
-  if (dbInstance) {
-    return;
-  }
-  dbInstance = await Database.initialize();
+export async function initializeDb(): Promise<void> {
+    if (dbInstance) {
+        return;
+    }
+    dbInstance = await Database.initialize();
 }
 
-const db: Database = new Proxy({} as Database, {
-  get(_target, prop) {
-    if (!dbInstance) {
-      throw new Error('Database not initialized. Call initializeDb() first.');
-    }
-    const value = dbInstance[prop as keyof Database];
-    if (typeof value === 'function') {
-      return value.bind(dbInstance);
-    }
-    return value;
-  },
+export const db: Database = new Proxy({} as Database, {
+    get(_target, prop) {
+        if (!dbInstance) {
+            throw new Error('Database not initialized. Call initializeDb() first.');
+        }
+        const value = dbInstance[prop as keyof Database];
+        if (typeof value === 'function') {
+            return value.bind(dbInstance);
+        }
+        return value;
+    },
 });
-
-export { db, Database, DB_PATH, initializeDb };

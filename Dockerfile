@@ -10,12 +10,10 @@ COPY . .
 
 RUN npm run build
 
-RUN mkdir -p /app/data
-
 EXPOSE 3000
 
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV DB_PATH=/app/data/gotyolo.db
+ENV DATABASE_URL=postgresql://gotyolo:gotyolo123@postgres:5432/gotyolo
 
 CMD ["node", "dist/src/index.js"]

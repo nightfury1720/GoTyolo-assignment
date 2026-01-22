@@ -33,9 +33,8 @@ function validateEnv(): void {
 async function startServer(): Promise<void> {
   validateEnv();
 
-  logger.info('Initializing database...');
+  // Initialize database connection
   await initializeDb();
-  logger.info('Database initialized successfully');
 
   const PORT = parseInt(process.env.PORT || '3000', 10);
   const app = express();
