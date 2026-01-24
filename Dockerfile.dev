@@ -1,0 +1,24 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json* ./
+
+# Install dependencies (including dev dependencies for development)
+RUN npm install
+
+# Expose port
+EXPOSE 3000
+
+# Set environment variables
+ENV NODE_ENV=development
+ENV PORT=3000
+ENV DATABASE_URL=postgresql://gotyolo:gotyolo123@postgres:5432/gotyolo
+
+# Install ts-node-dev globally for hot-reload
+RUN npm install -g ts-node-dev
+
+# Default command (will be overridden by docker-compose)
+CMD ["ts-node-dev", "--respawn", "--transpile-only", "src/index.ts"]
+

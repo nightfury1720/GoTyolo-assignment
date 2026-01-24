@@ -1,11 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
 import { STATES } from '../src/types';
 import { spawn, ChildProcess } from 'child_process';
-import { initializeDb } from '../src/db/database';
+import { initializeDb, db } from '../src/db/database';
 
 const API_BASE_URL = process.env.API_URL || 'http://localhost:3000';
-const SERVER_STARTUP_TIMEOUT = 30000; // 30 seconds
-const HEALTH_CHECK_INTERVAL = 500; // 500ms
+const SERVER_STARTUP_TIMEOUT = 30000;
+const HEALTH_CHECK_INTERVAL = 500;
 
 let serverProcess: ChildProcess | null = null;
 
@@ -23,7 +23,6 @@ async function waitForServer(maxAttempts: number = 60): Promise<void> {
         return;
       }
     } catch (err) {
-      // Server not ready yet
     }
     await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_INTERVAL));
   }
@@ -80,27 +79,17 @@ async function apiRequest(method: string, path: string, body?: any): Promise<any
   return data;
 }
 
-async function clearDatabase(): Promise<void> {
-  // Clear all data via API by deleting all bookings and trips
-  // First get all trips
+async function cleanDatabase(): Promise<void> {
+  console.log('🧹 Cleaning database...');
   try {
-    const tripsResponse = await apiRequest('GET', '/api/trips');
-    const trips = tripsResponse.trips || [];
-    
-    // For each trip, get bookings and cancel/delete them
-    for (const trip of trips) {
-      try {
-        const metrics = await apiRequest('GET', `/api/admin/trips/${trip.id}/metrics`);
-        // Bookings will be cleaned up when trips are deleted
-      } catch (err) {
-        // Ignore errors
-      }
-    }
-    
-    // Note: Since there's no DELETE endpoint, we'll work with what we have
-    // The tests will create fresh data each time
-  } catch (err) {
-    // Database might be empty, that's fine
+    // Delete from bookings first (due to foreign key constraint)
+    await db.run('DELETE FROM bookings');
+    // Then delete from trips
+    await db.run('DELETE FROM trips');
+    console.log('✅ Database cleaned successfully');
+  } catch (err: any) {
+    console.error('❌ Error cleaning database:', err.message);
+    throw err;
   }
 }
 
@@ -172,17 +161,14 @@ async function seedTestData(): Promise<any[]> {
     createdTrips.push(tripResponse.trip);
   }
 
-  // Create some bookings via API
   const bookings = [];
   if (createdTrips.length > 0) {
-    // Create confirmed bookings
     for (let i = 0; i < 3; i++) {
       const bookingResponse = await apiRequest('POST', `/api/trips/${createdTrips[0].id}/book`, {
         user_id: uuidv4(),
         num_seats: i + 1
       });
       bookings.push(bookingResponse.booking);
-      // Confirm the booking
       await apiRequest('POST', '/api/payments/webhook', {
         booking_id: bookingResponse.booking.id,
         status: 'success',
@@ -190,7 +176,6 @@ async function seedTestData(): Promise<any[]> {
       });
     }
 
-    // Create some pending bookings
     for (let i = 0; i < 2; i++) {
       const bookingResponse = await apiRequest('POST', `/api/trips/${createdTrips[1].id}/book`, {
         user_id: uuidv4(),
@@ -296,9 +281,8 @@ async function testCreateBooking(tripId: string): Promise<string> {
   assert(bookingResponse.booking, 'Should have booking object');
   assert(bookingResponse.booking.id, 'Should have booking ID');
   assert(bookingResponse.payment_url, 'Should have payment_url');
-  assert(bookingResponse.booking.state === STATES.PENDING_PAYMENT, 'Should be pending payment');
+    assert(bookingResponse.booking.state === STATES.PENDING_PAYMENT, 'Should be pending payment');
   
-  // Verify booking exists via API
   const booking = await apiRequest('GET', `/api/bookings/${bookingResponse.booking.id}`);
   assert(!!booking, 'Booking should exist');
   assert(booking.id === bookingResponse.booking.id, 'Booking ID should match');
@@ -335,7 +319,6 @@ async function testCancelBooking(tripId: string): Promise<void> {
     num_seats: 1
   });
   
-  // Confirm the booking first
   await apiRequest('POST', '/api/payments/webhook', {
     booking_id: bookingResponse.booking.id,
     status: 'success',
@@ -377,11 +360,8 @@ async function testExpiryService(tripId: string): Promise<void> {
     num_seats: 1
   });
   
-  // Trigger expiry via admin endpoint
   await apiRequest('POST', '/api/admin/expire-bookings');
   
-  // Note: The booking won't expire immediately since it was just created
-  // But we can verify the endpoint works
   const booking = await apiRequest('GET', `/api/bookings/${bookingResponse.booking.id}`);
   assert(booking.state === STATES.PENDING_PAYMENT || booking.state === STATES.EXPIRED, 'Booking should be pending or expired');
   console.log('✅ Expiry service test passed');
@@ -390,7 +370,6 @@ async function testExpiryService(tripId: string): Promise<void> {
 async function testOverbookingPrevention(tripId: string, maxCapacity: number): Promise<void> {
   console.log('🧪 Testing overbooking prevention...');
   
-  // Get current metrics to see available seats
   const metrics = await apiRequest('GET', `/api/admin/trips/${tripId}/metrics`);
   const availableSeats = metrics.available_seats;
   
@@ -421,14 +400,12 @@ async function testRefundCalculations(tripId: string): Promise<void> {
   
   const priceAtBooking = bookingResponse.booking.price_at_booking;
   
-  // Confirm the booking
   await apiRequest('POST', '/api/payments/webhook', {
     booking_id: bookingResponse.booking.id,
     status: 'success',
     idempotency_key: uuidv4()
   });
   
-  // Cancel the booking
   const cancelResponse = await apiRequest('POST', `/api/bookings/${bookingResponse.booking.id}/cancel`);
   const expectedRefund = priceAtBooking * (1 - (trip.cancellation_fee_percent || 0) / 100);
   assert(Math.abs(cancelResponse.refund_amount! - expectedRefund) < 0.01, 'Refund amount should match calculation');
@@ -457,13 +434,11 @@ async function testRaceConditionPrevention(tripId: string): Promise<void> {
     assert(successful.length <= availableSeats, 'Should not have more successful bookings than available seats');
     assert(failed.length >= 1, 'Should have at least one failure due to race condition');
     
-    // Clean up successful bookings by cancelling them
     for (const result of successful) {
       if (result.booking) {
         try {
           await apiRequest('POST', `/api/bookings/${result.booking.id}/cancel`);
         } catch (err) {
-          // Ignore cancellation errors
         }
       }
     }
@@ -492,13 +467,11 @@ async function testConcurrentBookingCreation(tripId: string): Promise<void> {
     const conflictFailures = failed.filter((r: any) => r.status === 409);
     assert(conflictFailures.length === failed.length, 'All failures should be 409 conflicts');
     
-    // Clean up
     for (const result of successful) {
       if (result.booking) {
         try {
           await apiRequest('POST', `/api/bookings/${result.booking.id}/cancel`);
         } catch (err) {
-          // Ignore errors
         }
       }
     }
@@ -522,7 +495,6 @@ async function testIdempotency(tripId: string): Promise<void> {
   
   const firstState = await apiRequest('GET', `/api/bookings/${bookingResponse.booking.id}`);
   
-  // Send same webhook again
   await apiRequest('POST', '/api/payments/webhook', {
     booking_id: bookingResponse.booking.id,
     status: 'success',
@@ -540,10 +512,11 @@ async function runComprehensiveTests(): Promise<void> {
   try {
     process.env.NODE_ENV = 'test';
 
-    // Initialize database
     await initializeDb();
 
-    // Start the server
+    // Clean database before starting tests
+    await cleanDatabase();
+
     await startServer();
 
     console.log('\n📦 Step 1: Creating test data via API...');
@@ -557,7 +530,6 @@ async function runComprehensiveTests(): Promise<void> {
     await testGetTrips();
     await testGetTripById(firstTripId);
     
-    // Get a booking ID for testing
     const testBookingResponse = await apiRequest('POST', `/api/trips/${firstTripId}/book`, {
       user_id: uuidv4(),
       num_seats: 1
@@ -591,8 +563,21 @@ async function runComprehensiveTests(): Promise<void> {
     console.log('✅ Business logic validated');
     console.log('✅ Race conditions prevented');
 
+    // Clean database after all tests complete
+    console.log('\n🧹 Cleaning up test data...');
+    await cleanDatabase();
+    console.log('✅ Test cleanup completed');
+
   } catch (error) {
     console.error('\n❌ COMPREHENSIVE TEST SUITE FAILED:', error);
+    // Clean database even if tests fail
+    try {
+      console.log('\n🧹 Cleaning up test data after failure...');
+      await cleanDatabase();
+      console.log('✅ Test cleanup completed');
+    } catch (cleanupError) {
+      console.error('❌ Error during cleanup:', cleanupError);
+    }
     throw error;
   } finally {
     await stopServer();

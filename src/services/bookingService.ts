@@ -15,16 +15,8 @@ export async function createBooking(tripId: string, userId: string, numSeats: nu
   const bookingId = uuidv4();
 
   return db.transaction(async () => {
-    // Clean up expired pending bookings before checking availability
-    await db.run(
-      `UPDATE bookings
-       SET state = ?, updated_at = ?
-       WHERE trip_id = ? AND state = ? AND expires_at < ?`,
-      [STATES.EXPIRED, now.toISOString(), tripId, STATES.PENDING_PAYMENT, now.toISOString()]
-    );
-
     const tripRow = await db.get<TripRow>(
-      'SELECT * FROM trips WHERE id = ? AND status = ?',
+      'SELECT * FROM trips WHERE id = ? AND status = ? FOR UPDATE',
       [tripId, 'PUBLISHED']
     );
 
@@ -33,7 +25,13 @@ export async function createBooking(tripId: string, userId: string, numSeats: nu
       throw new HttpError(404, 'Trip not found or not published');
     }
 
-    // Calculate available seats using pending bookings
+    await db.run(
+      `UPDATE bookings
+       SET state = ?, updated_at = ?
+       WHERE trip_id = ? AND state = ? AND expires_at < ?`,
+      [STATES.EXPIRED, now.toISOString(), tripId, STATES.PENDING_PAYMENT, now.toISOString()]
+    );
+
     const reservedSeats = await db.get<{ total_seats: number }>(
       `SELECT COALESCE(SUM(num_seats), 0) as total_seats
        FROM bookings
@@ -99,7 +97,6 @@ export async function confirmBooking(bookingId: string): Promise<Booking> {
     );
 
     if (!booking) {
-      // Check if booking exists but expired
       const expiredBooking = await db.get<BookingRow>(
         'SELECT * FROM bookings WHERE id = ?',
         [bookingId]

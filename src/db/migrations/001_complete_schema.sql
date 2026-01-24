@@ -1,7 +1,3 @@
--- Complete GoTyolo database schema
--- Includes trips and bookings tables with proper indexing
--- Bookings with PENDING_PAYMENT state act as seat buffer for concurrency control
-
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE IF NOT EXISTS trips (
@@ -43,6 +39,5 @@ CREATE INDEX IF NOT EXISTS idx_bookings_expires_at ON bookings(expires_at);
 CREATE INDEX IF NOT EXISTS idx_bookings_idempotency_key ON bookings(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_trips_status ON trips(status);
 
--- Index for efficient seat availability queries using PENDING_PAYMENT bookings
 CREATE INDEX IF NOT EXISTS idx_bookings_pending_availability ON bookings(trip_id, expires_at) WHERE state = 'PENDING_PAYMENT';
 

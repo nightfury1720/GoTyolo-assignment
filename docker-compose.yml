@@ -17,17 +17,29 @@ services:
       retries: 5
 
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
     ports:
       - "3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=development
       - PORT=3000
       - DATABASE_URL=postgresql://gotyolo:gotyolo123@postgres:5432/gotyolo
+    volumes:
+      # Mount source code for hot-reload
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./tests:/app/tests
+      - ./tsconfig.json:/app/tsconfig.json
+      # Exclude node_modules and dist from mount (use container's version)
+      - /app/node_modules
+      - /app/dist
     restart: unless-stopped
+    command: ["ts-node-dev", "--respawn", "--transpile-only", "--ignore-watch", "node_modules", "src/index.ts"]
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
       interval: 30s
