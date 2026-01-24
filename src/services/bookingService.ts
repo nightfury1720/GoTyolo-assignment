@@ -32,32 +32,36 @@ export async function createBooking(tripId: string, userId: string, numSeats: nu
       [STATES.EXPIRED, now.toISOString(), tripId, STATES.PENDING_PAYMENT, now.toISOString()]
     );
 
-    const reservedSeats = await db.get<{ total_seats: number }>(
-      `SELECT COALESCE(SUM(num_seats), 0) as total_seats
+    const seatCounts = await db.get<{ 
+      reserved_seats: number; 
+      confirmed_seats: number; 
+      total_occupied: number;
+    }>(
+      `SELECT 
+        COALESCE(SUM(CASE WHEN state = ? AND expires_at > ? THEN num_seats ELSE 0 END), 0) as reserved_seats,
+        COALESCE(SUM(CASE WHEN state = ? THEN num_seats ELSE 0 END), 0) as confirmed_seats,
+        COALESCE(SUM(CASE 
+          WHEN (state = ? AND expires_at > ?) OR state = ? 
+          THEN num_seats 
+          ELSE 0 
+        END), 0) as total_occupied
        FROM bookings
-       WHERE trip_id = ? AND state = ? AND expires_at > ?`,
-      [tripId, STATES.PENDING_PAYMENT, now.toISOString()]
+       WHERE trip_id = ?`,
+      [STATES.PENDING_PAYMENT, now.toISOString(), STATES.CONFIRMED, STATES.PENDING_PAYMENT, now.toISOString(), STATES.CONFIRMED, tripId]
     );
 
-    const confirmedSeats = await db.get<{ total_seats: number }>(
-      `SELECT COALESCE(SUM(num_seats), 0) as total_seats
-       FROM bookings
-       WHERE trip_id = ? AND state = ?`,
-      [tripId, STATES.CONFIRMED]
-    );
-
-    const totalOccupied = (reservedSeats?.total_seats || 0) + (confirmedSeats?.total_seats || 0);
+    const totalOccupied = seatCounts?.total_occupied || 0;
     const availableSeats = trip.max_capacity - totalOccupied;
 
     if (availableSeats < numSeats) {
-      throw new HttpError(409, 'Not enough seats available');
+      throw new HttpError(409, `Not enough seats available. ${availableSeats} seats remaining, ${numSeats} requested`);
     }
 
     logger.info('Seat availability check passed', {
       tripId,
       maxCapacity: trip.max_capacity,
-      reservedSeats: reservedSeats?.total_seats || 0,
-      confirmedSeats: confirmedSeats?.total_seats || 0,
+      reservedSeats: seatCounts?.reserved_seats || 0,
+      confirmedSeats: seatCounts?.confirmed_seats || 0,
       totalOccupied,
       availableSeats,
       requestedSeats: numSeats
