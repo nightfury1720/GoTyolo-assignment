@@ -30,7 +30,6 @@ export async function seed(): Promise<void> {
   await initializeDb();
 
   await db.transaction(async () => {
-    // Delete in correct order to avoid foreign key constraints
     await db.run('DELETE FROM reservations');
     await db.run('DELETE FROM bookings');
     await db.run('DELETE FROM trips');
@@ -146,7 +145,6 @@ export async function seed(): Promise<void> {
         [bookingId, entry.trip.id, userId, entry.num_seats, entry.state, priceAt, created, entry.expires_at || null, entry.cancelled_at || null, entry.refund_amount || null, created]
       );
 
-      // For PENDING_PAYMENT bookings, create a reservation to hold the seats
       if (entry.state === STATES.PENDING_PAYMENT) {
         const reservationId = uuidv4();
         const expiresAt = entry.expires_at || new Date(Date.now() + 15 * 60 * 1000).toISOString();
@@ -158,8 +156,6 @@ export async function seed(): Promise<void> {
           [reservationId, entry.trip.id, userId, entry.num_seats, priceAt, bookingId, expiresAt, created, created]
         );
       }
-      // For CONFIRMED bookings, we don't need reservations since seats are permanently allocated
-      // For EXPIRED/CANCELLED, reservations would have been cleaned up
     }
 
     logger.info('Database seeded successfully', { trips: trips.length, bookings: sampleBookings.length });

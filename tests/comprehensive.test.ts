@@ -3,7 +3,10 @@ import { db, initializeDb } from '../src/db/database';
 import { STATES, HttpError, TripRow } from '../src/types';
 import { seed } from '../scripts/seed';
 import { expirePendingBookings } from '../src/services/expiryService';
-import { createReservation } from '../src/services/bookingService';
+import { createReservation, createBooking, getBooking } from '../src/services/bookingService';
+import { processWebhook } from '../src/services/paymentService';
+import { cancelBookingWithRefund } from '../src/services/refundService';
+import { createTrip } from '../src/services/tripService';
 
 const API_BASE_URL = process.env.API_URL || 'http://localhost:3000';
 
@@ -13,40 +16,29 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
-// Simplified API simulation for testing core functionality
-async function simulateBookingCreation(tripId: string, userId: string, numSeats: number): Promise<any> {
-  const { createBooking } = await import('../src/services/bookingService');
-  const booking = await createBooking(tripId, userId, numSeats);
-  return { booking: booking.toJSON(), payment_url: `https://payments.example.com/pay/${booking.id}` };
-}
+async function apiRequest(method: string, path: string, body?: any): Promise<any> {
+  const url = `${API_BASE_URL}${path}`;
+  const options: RequestInit = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  };
 
-async function simulatePaymentWebhook(bookingId: string, status: string, idempotencyKey: string): Promise<any> {
-  const { processWebhook } = await import('../src/services/paymentService');
-  return await processWebhook(bookingId, status, idempotencyKey);
-}
+  if (body) {
+    options.body = JSON.stringify(body);
+  }
 
-async function simulateBookingCancellation(bookingId: string): Promise<any> {
-  const { cancelBookingWithRefund } = await import('../src/services/refundService');
-  return await cancelBookingWithRefund(bookingId);
-}
+  const response = await fetch(url, options);
+  const data: any = await response.json();
 
-async function simulateGetTrips(): Promise<any> {
-  const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
-  return { trips };
-}
+  if (!response.ok) {
+    const error = new Error(data.error || `HTTP ${response.status}`);
+    (error as any).status = response.status;
+    throw error;
+  }
 
-async function simulateGetTrip(tripId: string): Promise<any> {
-  return await db.get('SELECT * FROM trips WHERE id = ?', [tripId]);
-}
-
-async function simulateGetBooking(bookingId: string): Promise<any> {
-  const { getBooking } = await import('../src/services/bookingService');
-  return await getBooking(bookingId);
-}
-
-async function simulateGetUserBookings(userId: string): Promise<any> {
-  const bookings = await db.all('SELECT * FROM bookings WHERE user_id = ? ORDER BY created_at DESC', [userId]);
-  return { bookings };
+  return data;
 }
 
 async function clearDatabase(): Promise<void> {
@@ -57,469 +49,370 @@ async function clearDatabase(): Promise<void> {
   });
 }
 
-// Note: This test assumes the server is already running on localhost:3000
-// In a production environment, you would start the server for testing
-
-async function waitForServer(url: string, timeout = 10000): Promise<void> {
-  const startTime = Date.now();
-  while (Date.now() - startTime < timeout) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return;
-      }
-    } catch (error) {
-      // Server not ready yet
-    }
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error('Server failed to start within timeout');
+async function testDatabaseConnection(): Promise<void> {
+  console.log('🧪 Testing database connection...');
+  const result = await db.get<{ test: number }>('SELECT 1 as test');
+  assert(result?.test === 1, 'Database connection failed');
+  console.log('✅ Database connection test passed');
 }
 
-// ============================================================================
-// API ENDPOINT TESTS
-// ============================================================================
+async function testSeedData(): Promise<void> {
+  console.log('🧪 Testing seed data...');
+  const trips = await db.all('SELECT * FROM trips');
+  assert(trips.length === 5, `Expected 5 trips, got ${trips.length}`);
+  const bookings = await db.all('SELECT * FROM bookings');
+  assert(bookings.length === 10, `Expected 10 bookings, got ${bookings.length}`);
+  console.log('✅ Seed data test passed');
+}
 
-async function testTripEndpoints(): Promise<void> {
-  console.log('🧪 Testing trip API endpoints...');
-
-  // Test GET /api/trips
-  const tripsResponse = await simulateGetTrips();
+async function testGetTrips(): Promise<void> {
+  console.log('🧪 Testing GET /api/trips...');
+  const tripsResponse = await apiRequest('GET', '/api/trips');
   assert(tripsResponse.trips, 'Should have trips property');
   assert(Array.isArray(tripsResponse.trips), 'Trips should be an array');
   assert(tripsResponse.trips.length > 0, 'Should have trips');
+  assert(tripsResponse.trips.every((t: any) => t.status === 'PUBLISHED'), 'All trips should be published');
+  console.log('✅ GET /api/trips test passed');
+}
 
-  // Test GET /api/trips/:id
-  const tripId = tripsResponse.trips[0].id;
-  const tripResponse = await simulateGetTrip(tripId);
+async function testGetTripById(): Promise<void> {
+  console.log('🧪 Testing GET /api/trips/:id...');
+  const trips = await db.all<TripRow>('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
+  const tripId = trips[0].id;
+  const tripResponse = await apiRequest('GET', `/api/trips/${tripId}`);
   assert(tripResponse.id === tripId, 'Trip ID should match');
   assert(tripResponse.title, 'Should have title');
   assert(tripResponse.price, 'Should have price');
-
-  console.log('✅ Trip API endpoints test passed');
+  assert(tripResponse.destination, 'Should have destination');
+  console.log('✅ GET /api/trips/:id test passed');
 }
 
-async function testBookingEndpoints(): Promise<void> {
-  console.log('🧪 Testing booking API endpoints...');
+async function testGetBooking(): Promise<void> {
+  console.log('🧪 Testing GET /api/bookings/:id...');
+  const bookings = await db.all('SELECT * FROM bookings LIMIT 1');
+  if (bookings.length > 0) {
+    const bookingId = (bookings[0] as any).id;
+    const bookingResponse = await apiRequest('GET', `/api/bookings/${bookingId}`);
+    assert(bookingResponse.id === bookingId, 'Booking ID should match');
+    assert(bookingResponse.state, 'Should have state');
+  }
+  console.log('✅ GET /api/bookings/:id test passed');
+}
 
-  // Get a published trip
+async function testGetAdminMetrics(): Promise<void> {
+  console.log('🧪 Testing GET /api/admin/metrics...');
+  const trips = await db.all<TripRow>('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
+  const tripId = trips[0].id;
+  const metricsResponse = await apiRequest('GET', `/api/admin/trips/${tripId}/metrics`);
+  assert(metricsResponse.trip_id, 'Should have trip_id');
+  assert(metricsResponse.occupancy_percent !== undefined, 'Should have occupancy_percent');
+  assert(metricsResponse.total_seats !== undefined, 'Should have total_seats');
+  assert(metricsResponse.booked_seats !== undefined, 'Should have booked_seats');
+  assert(metricsResponse.available_seats !== undefined, 'Should have available_seats');
+  console.log('✅ GET /api/admin/metrics test passed');
+}
+
+async function testGetAtRiskTrips(): Promise<void> {
+  console.log('🧪 Testing GET /api/admin/trips/at-risk...');
+  const atRiskResponse = await apiRequest('GET', '/api/admin/trips/at-risk');
+  assert(atRiskResponse.at_risk_trips !== undefined, 'Should have at_risk_trips field');
+  assert(Array.isArray(atRiskResponse.at_risk_trips), 'at_risk_trips should be an array');
+  console.log('✅ GET /api/admin/trips/at-risk test passed');
+}
+
+async function testCreateTrip(): Promise<void> {
+  console.log('🧪 Testing POST /api/trips...');
+  const tripData = {
+    title: 'Test Trip',
+    destination: 'Test Destination',
+    start_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    end_date: new Date(Date.now() + 35 * 24 * 60 * 60 * 1000).toISOString(),
+    price: 1000,
+    max_capacity: 50,
+    refundable_until_days_before: 7,
+    cancellation_fee_percent: 10,
+    status: 'PUBLISHED'
+  };
+  const tripResponse = await apiRequest('POST', '/api/trips', tripData);
+  assert(tripResponse.trip, 'Should have trip object');
+  assert(tripResponse.trip.id, 'Should have trip ID');
+  assert(tripResponse.trip.title === tripData.title, 'Title should match');
+  console.log('✅ POST /api/trips test passed');
+}
+
+async function testCreateBooking(): Promise<void> {
+  console.log('🧪 Testing POST /api/trips/:id/book...');
   const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
   const trip = trips[0] as any;
-
-  const userId = uuidv4();
-
-  // Test POST /api/trips/:id/book
   const bookingData = {
-    user_id: userId,
-    num_seats: 1
+    user_id: uuidv4(),
+    num_seats: 2
   };
-
-  const bookingResponse = await simulateBookingCreation(trip.id, userId, 1);
+  const bookingResponse = await apiRequest('POST', `/api/trips/${trip.id}/book`, bookingData);
   assert(bookingResponse.booking, 'Should have booking object');
   assert(bookingResponse.booking.id, 'Should have booking ID');
+  assert(bookingResponse.payment_url, 'Should have payment_url');
   assert(bookingResponse.booking.state === STATES.PENDING_PAYMENT, 'Should be pending payment');
-
-  const bookingId = bookingResponse.booking.id;
-
-  // Test GET /api/bookings/:id
-  const getBookingResponse = await simulateGetBooking(bookingId);
-  assert(getBookingResponse && getBookingResponse.id === bookingId, 'Booking ID should match');
-  assert(getBookingResponse.state === STATES.PENDING_PAYMENT, 'Should be pending payment');
-
-  // Test GET /api/bookings (with user_id filter)
-  const userBookingsResponse = await simulateGetUserBookings(userId);
-  assert(Array.isArray(userBookingsResponse.bookings), 'Should return bookings array');
-  assert(userBookingsResponse.bookings.length > 0, 'Should have user bookings');
-
-  console.log('✅ Booking API endpoints test passed');
+  const booking = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingResponse.booking.id]);
+  assert(!!booking, 'Booking should exist in database');
+  const reservation = await db.get('SELECT * FROM reservations WHERE booking_id = ?', [bookingResponse.booking.id]);
+  assert(!!reservation, 'Reservation should exist');
+  console.log('✅ POST /api/trips/:id/book test passed');
 }
 
-async function testPaymentEndpoints(): Promise<void> {
-  console.log('🧪 Testing payment API endpoints...');
-
-  // Create a booking first
+async function testPaymentWebhook(): Promise<void> {
+  console.log('🧪 Testing POST /api/payments/webhook...');
   const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
   const trip = trips[0] as any;
-
-  const bookingResponse = await simulateBookingCreation(trip.id, uuidv4(), 1);
-  const bookingId = bookingResponse.booking.id;
-
-  // Test POST /api/payments/webhook (success)
-  const webhookResponse = await simulatePaymentWebhook(bookingId, 'success', uuidv4());
-  assert(webhookResponse.state === 'CONFIRMED', 'Payment should be confirmed');
-
-  // Verify booking is confirmed
-  const booking = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
-  assert((booking as any).state === STATES.CONFIRMED, 'Booking should be confirmed');
-
-  // Test idempotency - same webhook again (should not fail)
-  try {
-    await simulatePaymentWebhook(bookingId, 'success', uuidv4());
-    // If we get here, the idempotency check worked
-  } catch (error) {
-    // This is expected to potentially fail due to duplicate processing
-    console.log('Idempotency test: Duplicate webhook handled');
-  }
-
-  console.log('✅ Payment API endpoints test passed');
+  const booking = await createBooking(trip.id, uuidv4(), 1);
+  const futureExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  await db.run('UPDATE reservations SET expires_at = ? WHERE booking_id = ?', [futureExpiry, booking.id]);
+  await db.run('UPDATE bookings SET expires_at = ? WHERE id = ?', [futureExpiry, booking.id]);
+  const paymentData = {
+    booking_id: booking.id,
+    status: 'success',
+    idempotency_key: uuidv4()
+  };
+  const paymentResponse = await apiRequest('POST', '/api/payments/webhook', paymentData);
+  assert(paymentResponse.state === 'CONFIRMED', 'Payment should be confirmed');
+  const updatedBooking = await db.get('SELECT * FROM bookings WHERE id = ?', [booking.id]);
+  assert((updatedBooking as any).state === STATES.CONFIRMED, 'Booking should be confirmed');
+  console.log('✅ POST /api/payments/webhook test passed');
 }
 
-async function testCancellationEndpoints(): Promise<void> {
-  console.log('🧪 Testing cancellation API endpoints...');
-
-  // Create and confirm a booking
+async function testCancelBooking(): Promise<void> {
+  console.log('🧪 Testing POST /api/bookings/:id/cancel...');
   const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
   const trip = trips[0] as any;
-
-  const bookingResponse = await simulateBookingCreation(trip.id, uuidv4(), 1);
-  const bookingId = bookingResponse.booking.id;
-
-  // Confirm payment
-  await simulatePaymentWebhook(bookingId, 'success', uuidv4());
-
-  // Test POST /api/bookings/:id/cancel
-  const cancelResponse = await simulateBookingCancellation(bookingId);
+  const booking = await createBooking(trip.id, uuidv4(), 1);
+  const futureExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  await db.run('UPDATE reservations SET expires_at = ? WHERE booking_id = ?', [futureExpiry, booking.id]);
+  await db.run('UPDATE bookings SET expires_at = ? WHERE id = ?', [futureExpiry, booking.id]);
+  await processWebhook(booking.id, 'success', uuidv4());
+  const cancelResponse = await apiRequest('POST', `/api/bookings/${booking.id}/cancel`);
   assert(cancelResponse, 'Cancellation should succeed');
   assert(cancelResponse.refund_amount !== undefined, 'Should have refund amount');
-
-  // Verify booking is cancelled
-  const booking = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
-  assert((booking as any).state === STATES.CANCELLED, 'Booking should be cancelled');
-
-  console.log('✅ Cancellation API endpoints test passed');
+  const cancelledBooking = await db.get('SELECT * FROM bookings WHERE id = ?', [booking.id]);
+  assert((cancelledBooking as any).state === STATES.CANCELLED, 'Booking should be cancelled');
+  console.log('✅ POST /api/bookings/:id/cancel test passed');
 }
 
-// Admin endpoints test removed for simplicity - focuses on core booking functionality
-
-// ============================================================================
-// STATE TRANSITION TESTS
-// ============================================================================
-
-async function testHappyPathStateTransitions(): Promise<void> {
-  console.log('🧪 Testing happy path state transitions...');
-
-  // Get a published trip
+async function testFailedPaymentWebhook(): Promise<void> {
+  console.log('🧪 Testing failed payment webhook...');
   const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
   const trip = trips[0] as any;
-  const userId = uuidv4();
-
-  // 1. PENDING_PAYMENT -> CONFIRMED
-  const bookingResponse = await simulateBookingCreation(trip.id, userId, 1);
-  const bookingId = bookingResponse.booking.id;
-
-  // Verify initial state
-  let booking = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
-  assert((booking as any).state === STATES.PENDING_PAYMENT, 'Should start as PENDING_PAYMENT');
-
-  // Confirm payment
-  await simulatePaymentWebhook(bookingId, 'success', uuidv4());
-
-  // Verify CONFIRMED state
-  booking = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
-  assert((booking as any).state === STATES.CONFIRMED, 'Should transition to CONFIRMED');
-
-  // 2. CONFIRMED -> CANCELLED (with refund)
-  const cancelResponse = await simulateBookingCancellation(bookingId);
-  assert(cancelResponse, 'Cancellation should succeed');
-
-  // Verify CANCELLED state
-  booking = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
-  assert((booking as any).state === STATES.CANCELLED, 'Should transition to CANCELLED');
-
-  console.log('✅ Happy path state transitions test passed');
-}
-
-async function testExpiryStateTransitions(): Promise<void> {
-  console.log('🧪 Testing expiry state transitions...');
-
-  // Get a published trip
-  const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
-  const trip = trips[0] as any;
-
-  // Create a booking
-  const bookingData = {
-    user_id: uuidv4(),
-    num_seats: 1
-  };
-
-  const bookingResponse = await simulateBookingCreation(trip.id, uuidv4(), 1);
-  const bookingId = bookingResponse.booking.id;
-
-  // Manually expire the booking
-  const pastTime = new Date(Date.now() - 1000).toISOString();
-  await db.run('UPDATE bookings SET expires_at = ? WHERE id = ?', [pastTime, bookingId]);
-
-  // Run expiry service
-  await expirePendingBookings();
-
-  // Verify EXPIRED state
-  const booking = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
-  assert((booking as any).state === STATES.EXPIRED, 'Should transition to EXPIRED');
-
-  console.log('✅ Expiry state transitions test passed');
-}
-
-async function testFailedPaymentStateTransitions(): Promise<void> {
-  console.log('🧪 Testing failed payment state transitions...');
-
-  // Get a published trip
-  const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
-  const trip = trips[0] as any;
-
-  // Create a booking
-  const bookingData = {
-    user_id: uuidv4(),
-    num_seats: 1
-  };
-
-  const bookingResponse = await simulateBookingCreation(trip.id, uuidv4(), 1);
-  const bookingId = bookingResponse.booking.id;
-
-  // Send failed payment webhook
+  const booking = await createBooking(trip.id, uuidv4(), 1);
+  const futureExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  await db.run('UPDATE reservations SET expires_at = ? WHERE booking_id = ?', [futureExpiry, booking.id]);
+  await db.run('UPDATE bookings SET expires_at = ? WHERE id = ?', [futureExpiry, booking.id]);
   const paymentData = {
-    booking_id: bookingId,
+    booking_id: booking.id,
     status: 'failed',
     idempotency_key: uuidv4()
   };
-  await simulatePaymentWebhook(bookingId, 'success', uuidv4());
-
-  // Verify EXPIRED state
-  const booking = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
-  assert((booking as any).state === STATES.EXPIRED, 'Should transition to EXPIRED on failed payment');
-
-  console.log('✅ Failed payment state transitions test passed');
+  await apiRequest('POST', '/api/payments/webhook', paymentData);
+  const failedBooking = await db.get('SELECT * FROM bookings WHERE id = ?', [booking.id]);
+  assert((failedBooking as any).state === STATES.EXPIRED, 'Booking should be expired on failed payment');
+  console.log('✅ Failed payment webhook test passed');
 }
 
-// ============================================================================
-// RACE CONDITION TESTS
-// ============================================================================
-
-async function testRaceConditionPrevention(): Promise<void> {
-  console.log('🧪 Testing race condition prevention...');
-
+async function testExpiryService(): Promise<void> {
+  console.log('🧪 Testing expiry service...');
   const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
   const trip = trips[0] as any;
-
-  // Calculate how many seats we can book
-  const reservedSeats = await db.get<{ total_seats: number }>(
-    `SELECT COALESCE(SUM(num_seats), 0) as total_seats
-     FROM reservations
-     WHERE trip_id = ? AND expires_at > ?`,
-    [trip.id, new Date().toISOString()]
-  );
-
-  const availableSeats = trip.max_capacity - (reservedSeats?.total_seats || 0);
-
-  if (availableSeats >= 3) {
-    // Create multiple concurrent booking requests
-    const userIds = [uuidv4(), uuidv4(), uuidv4()];
-
-    // Create promises for concurrent requests
-    const promises = userIds.map(userId =>
-      simulateBookingCreation(trip.id, userId, 1).catch(err => ({ error: err.message, status: err.status }))
-    );
-
-    const results = await Promise.all(promises);
-
-    // Count successful vs failed bookings
-    const successful = results.filter((r: any) => !r.error);
-    const failed = results.filter((r: any) => r.error);
-
-    assert(successful.length <= availableSeats, 'Should not have more successful bookings than available seats');
-    assert(failed.length >= 0, 'Some requests may fail due to race conditions');
-
-    // Check that failed requests got 409 status
-    const conflictFailures = failed.filter((r: any) => r.status === 409);
-    assert(conflictFailures.length === failed.length, 'All failures should be 409 conflicts');
-
-    // Clean up successful bookings
-    for (const result of successful) {
-      const bookingId = (result as any).booking.id;
-      await db.run('DELETE FROM bookings WHERE id = ?', [bookingId]);
-      await db.run('DELETE FROM reservations WHERE booking_id = ?', [bookingId]);
-    }
-  }
-
-  console.log('✅ Race condition prevention test passed');
+  const booking = await createBooking(trip.id, uuidv4(), 1);
+  const pastTime = new Date(Date.now() - 1000).toISOString();
+  await db.run('UPDATE reservations SET expires_at = ? WHERE booking_id = ?', [pastTime, booking.id]);
+  await db.run('UPDATE bookings SET expires_at = ? WHERE id = ?', [pastTime, booking.id]);
+  await expirePendingBookings();
+  const expiredBooking = await db.get('SELECT * FROM bookings WHERE id = ?', [booking.id]);
+  assert((expiredBooking as any).state === STATES.EXPIRED, 'Booking should be expired');
+  const reservation = await db.get('SELECT * FROM reservations WHERE booking_id = ?', [booking.id]);
+  assert(!reservation, 'Reservation should be cleaned up');
+  console.log('✅ Expiry service test passed');
 }
-
-async function testConcurrentReservationCreation(): Promise<void> {
-  console.log('🧪 Testing concurrent reservation creation...');
-
-  const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
-  const trip = trips[0] as any;
-
-  // Calculate available seats
-  const reservedSeats = await db.get<{ total_seats: number }>(
-    `SELECT COALESCE(SUM(num_seats), 0) as total_seats
-     FROM reservations
-     WHERE trip_id = ? AND expires_at > ?`,
-    [trip.id, new Date().toISOString()]
-  );
-
-  const availableSeats = trip.max_capacity - (reservedSeats?.total_seats || 0);
-
-  if (availableSeats >= 2) {
-    // Create multiple concurrent reservation requests using the service directly
-    const userIds = [uuidv4(), uuidv4(), uuidv4()];
-
-    const promises = userIds.map(userId =>
-      createReservation(trip.id, userId, 1).catch(err => ({ error: err.message }))
-    );
-
-    const results = await Promise.all(promises);
-
-    const successful = results.filter((r: any) => !r.error);
-    const failed = results.filter((r: any) => r.error);
-
-    assert(successful.length <= availableSeats, 'Should not exceed available seats');
-    assert(failed.length >= 0, 'Some reservations may fail');
-
-    // Clean up
-    for (const result of successful) {
-      await db.run('DELETE FROM reservations WHERE id = ?', [(result as any).reservationId]);
-      await db.run('DELETE FROM bookings WHERE id = ?', [(result as any).bookingId]);
-    }
-  }
-
-  console.log('✅ Concurrent reservation creation test passed');
-}
-
-// ============================================================================
-// BUSINESS LOGIC TESTS
-// ============================================================================
 
 async function testOverbookingPrevention(): Promise<void> {
   console.log('🧪 Testing overbooking prevention...');
-
   const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
   const trip = trips[0] as any;
-
-  // Calculate remaining capacity
   const reservedSeats = await db.get<{ total_seats: number }>(
     `SELECT COALESCE(SUM(num_seats), 0) as total_seats
      FROM reservations
      WHERE trip_id = ? AND expires_at > ?`,
     [trip.id, new Date().toISOString()]
   );
-
   const remainingSeats = trip.max_capacity - (reservedSeats?.total_seats || 0);
-
   if (remainingSeats > 0) {
-    // Try to book more seats than available
     const bookingData = {
       user_id: uuidv4(),
-      num_seats: remainingSeats + 1 // Request one more than available
+      num_seats: remainingSeats + 1
     };
-
     try {
-      await simulateBookingCreation(trip.id, uuidv4(), remainingSeats + 1);
+      await apiRequest('POST', `/api/trips/${trip.id}/book`, bookingData);
       assert(false, 'Should have failed with overbooking');
     } catch (error: any) {
       assert(error.status === 409, `Expected 409, got ${error.status}`);
-      assert(error.message.includes('Not enough seats') || error.message.includes('seats'), 'Should mention seats availability');
+      assert(error.message.includes('Not enough seats'), 'Should mention seats availability');
     }
   }
-
   console.log('✅ Overbooking prevention test passed');
 }
 
 async function testRefundCalculations(): Promise<void> {
   console.log('🧪 Testing refund calculations...');
-
-  // Get a trip with refund policy
   const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
   const trip = trips[0] as any;
-
-  // Create and confirm a booking
-  const bookingData = {
-    user_id: uuidv4(),
-    num_seats: 1
-  };
-
-  const bookingResponse = await simulateBookingCreation(trip.id, uuidv4(), 1);
-  const bookingId = bookingResponse.booking.id;
-  const priceAtBooking = bookingResponse.booking.price_at_booking;
-
-  // Confirm payment
-  const paymentData = {
-    booking_id: bookingId,
-    status: 'success',
-    idempotency_key: uuidv4()
-  };
-  await simulatePaymentWebhook(bookingId, 'success', uuidv4());
-
-  // Cancel and check refund
-  const cancelResponse = await simulateBookingCancellation(bookingId);
-  const expectedRefund = priceAtBooking * (1 - (trip.refund_policy?.cancellation_fee_percent || 0) / 100);
-
-  assert(Math.abs(cancelResponse.refund_amount - expectedRefund) < 0.01, 'Refund amount should match calculation');
-
+  const booking = await createBooking(trip.id, uuidv4(), 1);
+  const priceAtBooking = booking.price_at_booking;
+  const futureExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  await db.run('UPDATE reservations SET expires_at = ? WHERE booking_id = ?', [futureExpiry, booking.id]);
+  await db.run('UPDATE bookings SET expires_at = ? WHERE id = ?', [futureExpiry, booking.id]);
+  await processWebhook(booking.id, 'success', uuidv4());
+  const cancelResponse = await cancelBookingWithRefund(booking.id);
+  const expectedRefund = priceAtBooking * (1 - (trip.cancellation_fee_percent || 0) / 100);
+  assert(Math.abs(cancelResponse.refund_amount! - expectedRefund) < 0.01, 'Refund amount should match calculation');
   console.log('✅ Refund calculations test passed');
 }
 
-// ============================================================================
-// MAIN TEST RUNNER
-// ============================================================================
+async function testRaceConditionPrevention(): Promise<void> {
+  console.log('🧪 Testing race condition prevention...');
+  const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
+  const trip = trips[0] as any;
+  const reservedSeats = await db.get<{ total_seats: number }>(
+    `SELECT COALESCE(SUM(num_seats), 0) as total_seats
+     FROM reservations
+     WHERE trip_id = ? AND expires_at > ?`,
+    [trip.id, new Date().toISOString()]
+  );
+  const availableSeats = trip.max_capacity - (reservedSeats?.total_seats || 0);
+  if (availableSeats >= 2) {
+    const userId = uuidv4();
+    const promises = [];
+    for (let i = 0; i < 3; i++) {
+      promises.push(
+        createReservation(trip.id, `${userId}-${i}`, 1).catch(err => ({ error: err.message }))
+      );
+    }
+    const results = await Promise.all(promises);
+    const successful = results.filter((r: any) => !r.error);
+    const failed = results.filter((r: any) => r.error);
+    assert(successful.length <= availableSeats, 'Should not have more successful reservations than available seats');
+    assert(failed.length >= 1, 'Should have at least one failure due to race condition');
+    for (const result of successful) {
+      await db.run('DELETE FROM reservations WHERE id = ?', [(result as any).reservationId]);
+      await db.run('DELETE FROM bookings WHERE id = ?', [(result as any).bookingId]);
+    }
+  }
+  console.log('✅ Race condition prevention test passed');
+}
 
-// Test suite for comprehensive API and business logic testing
+async function testConcurrentBookingCreation(): Promise<void> {
+  console.log('🧪 Testing concurrent booking creation...');
+  const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
+  const trip = trips[0] as any;
+  const reservedSeats = await db.get<{ total_seats: number }>(
+    `SELECT COALESCE(SUM(num_seats), 0) as total_seats
+     FROM reservations
+     WHERE trip_id = ? AND expires_at > ?`,
+    [trip.id, new Date().toISOString()]
+  );
+  const availableSeats = trip.max_capacity - (reservedSeats?.total_seats || 0);
+  if (availableSeats >= 3) {
+    const userIds = [uuidv4(), uuidv4(), uuidv4()];
+    const promises = userIds.map(userId =>
+      createBooking(trip.id, userId, 1).catch(err => ({ error: err.message, status: (err as any).status }))
+    );
+    const results = await Promise.all(promises);
+    const successful = results.filter((r: any) => !r.error);
+    const failed = results.filter((r: any) => r.error);
+    assert(successful.length <= availableSeats, 'Should not have more successful bookings than available seats');
+    assert(failed.length >= 0, 'Some requests may fail due to race conditions');
+    const conflictFailures = failed.filter((r: any) => r.status === 409);
+    assert(conflictFailures.length === failed.length, 'All failures should be 409 conflicts');
+    for (const result of successful) {
+      const bookingId = (result as any).id;
+      await db.run('DELETE FROM bookings WHERE id = ?', [bookingId]);
+      await db.run('DELETE FROM reservations WHERE booking_id = ?', [bookingId]);
+    }
+  }
+  console.log('✅ Concurrent booking creation test passed');
+}
+
+async function testIdempotency(): Promise<void> {
+  console.log('🧪 Testing webhook idempotency...');
+  const trips = await db.all('SELECT * FROM trips WHERE status = ?', ['PUBLISHED']);
+  const trip = trips[0] as any;
+  const booking = await createBooking(trip.id, uuidv4(), 1);
+  const futureExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  await db.run('UPDATE reservations SET expires_at = ? WHERE booking_id = ?', [futureExpiry, booking.id]);
+  await db.run('UPDATE bookings SET expires_at = ? WHERE id = ?', [futureExpiry, booking.id]);
+  const idempotencyKey = uuidv4();
+  await processWebhook(booking.id, 'success', idempotencyKey);
+  const firstState = (await db.get('SELECT * FROM bookings WHERE id = ?', [booking.id])) as any;
+  await processWebhook(booking.id, 'success', idempotencyKey);
+  const secondState = (await db.get('SELECT * FROM bookings WHERE id = ?', [booking.id])) as any;
+  assert(firstState.state === secondState.state, 'State should not change on duplicate webhook');
+  assert(firstState.idempotency_key === idempotencyKey, 'Idempotency key should be set');
+  console.log('✅ Webhook idempotency test passed');
+}
 
 async function runComprehensiveTests(): Promise<void> {
   console.log('🚀 Starting comprehensive test suite...\n');
 
   try {
-    // Set up test environment
     process.env.NODE_ENV = 'test';
 
-    // Initialize database connection
     await initializeDb();
+    await testDatabaseConnection();
 
-    // Clear and seed database
+    console.log('\n📦 Step 1: Cleaning database...');
     await clearDatabase();
+    console.log('✅ Database cleaned');
+
+    console.log('\n📦 Step 2: Seeding data...');
     await seed();
+    await testSeedData();
 
-    console.log('🔄 Assuming server is running on', API_BASE_URL);
-    console.log('📝 If server is not running, start it with: npm run dev\n');
+    console.log('\n📡 Step 3: Testing GET APIs...');
+    await testGetTrips();
+    await testGetTripById();
+    await testGetBooking();
+    await testGetAdminMetrics();
+    await testGetAtRiskTrips();
 
-    // Run all API endpoint tests
-    console.log('📡 Testing API Endpoints...\n');
-    await testTripEndpoints();
-    await testBookingEndpoints();
-    await testPaymentEndpoints();
-    await testCancellationEndpoints();
+    console.log('\n✏️  Step 4: Testing data modification APIs...');
+    await testCreateTrip();
+    await testCreateBooking();
+    await testPaymentWebhook();
+    await testCancelBooking();
+    await testFailedPaymentWebhook();
+    await testExpiryService();
 
-    // Run state transition tests
-    console.log('\n🔄 Testing State Transitions...\n');
-    await testHappyPathStateTransitions();
-    await testExpiryStateTransitions();
-    await testFailedPaymentStateTransitions();
-
-    // Run race condition tests
-    console.log('\n⚡ Testing Race Conditions...\n');
-    await testRaceConditionPrevention();
-    await testConcurrentReservationCreation();
-
-    // Run business logic tests
-    console.log('\n💼 Testing Business Logic...\n');
+    console.log('\n💼 Step 5: Testing business logic...');
     await testOverbookingPrevention();
     await testRefundCalculations();
 
+    console.log('\n⚡ Step 6: Testing race conditions...');
+    await testRaceConditionPrevention();
+    await testConcurrentBookingCreation();
+    await testIdempotency();
+
     console.log('\n🎉 ALL COMPREHENSIVE TESTS PASSED! 🎉');
-    console.log('✅ API endpoints functioning correctly');
-    console.log('✅ State transitions working (happy path, expiry, cancellation)');
-    console.log('✅ Race conditions prevented');
+    console.log('✅ Database operations working correctly');
+    console.log('✅ GET APIs functioning correctly');
+    console.log('✅ Data modification APIs working');
     console.log('✅ Business logic validated');
+    console.log('✅ Race conditions prevented');
 
   } catch (error) {
     console.error('\n❌ COMPREHENSIVE TEST SUITE FAILED:', error);
     throw error;
   } finally {
-    // Clean up
     db.close();
   }
 }
 
-// Run tests if called directly
 if (require.main === module) {
   runComprehensiveTests().catch((err) => {
     console.error('Comprehensive test suite failed:', err.message);

@@ -4,7 +4,6 @@ import * as path from 'path';
 
 export const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://gotyolo:gotyolo123@postgres:5432/gotyolo';
 
-// Convert SQLite-style ? placeholders to PostgreSQL $1, $2, $3... format
 function convertPlaceholders(sql: string): string {
     let paramIndex = 1;
     return sql.replace(/\?/g, () => `$${paramIndex++}`);
@@ -20,12 +19,11 @@ export class Database {
     static async initialize(): Promise<Database> {
         const pool = new Pool({
             connectionString: DATABASE_URL,
-            max: 20, // Maximum number of clients in the pool
+            max: 20,
             idleTimeoutMillis: 30000,
             connectionTimeoutMillis: 2000,
         });
 
-        // Test the connection
         const client = await pool.connect();
         try {
             await client.query('SELECT 1');
@@ -84,7 +82,6 @@ export class Database {
     }
 }
 
-// Wrapper for transaction client
 export class TransactionDatabase {
     private client: PoolClient;
 
@@ -104,13 +101,11 @@ export class TransactionDatabase {
         return this.client.query(convertPlaceholders(sql), params).then(result => result.rows);
     }
 
-    // Override transaction to prevent nested transactions
     async transaction<T>(fn: (db: TransactionDatabase) => Promise<T>): Promise<T> {
         return fn(this);
     }
 
     close(): void {
-        // Don't close the client in transactions
     }
 }
 

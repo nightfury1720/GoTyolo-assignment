@@ -63,3 +63,4 @@ CREATE INDEX IF NOT EXISTS idx_reservations_booking_id ON reservations(booking_i
 
 -- Additional index for efficient cleanup of expired unfulfilled reservations
 CREATE INDEX IF NOT EXISTS idx_reservations_expires_at_active ON reservations(expires_at) WHERE booking_id IS NULL;
+

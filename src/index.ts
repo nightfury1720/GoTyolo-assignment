@@ -33,7 +33,6 @@ function validateEnv(): void {
 async function startServer(): Promise<void> {
   validateEnv();
 
-  // Initialize database connection
   await initializeDb();
 
   const PORT = parseInt(process.env.PORT || '3000', 10);

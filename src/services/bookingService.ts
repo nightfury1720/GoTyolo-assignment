@@ -11,12 +11,11 @@ export async function createReservation(tripId: string, userId: string, numSeats
   }
 
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + 15 * 60 * 1000); // 15 minutes as per requirements
+  const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
   const reservationId = uuidv4();
   const bookingId = uuidv4();
 
   return db.transaction(async () => {
-    // Clean up expired reservations first to free up seats
     await db.run(
       `DELETE FROM reservations
        WHERE trip_id = ? AND expires_at < ? AND booking_id IS NULL`,
@@ -33,8 +32,6 @@ export async function createReservation(tripId: string, userId: string, numSeats
       throw new HttpError(404, 'Trip not found or not published');
     }
 
-    // Calculate available seats based on active reservations
-    // This is the single source of truth for seat availability
     const reservedSeats = await db.get<{ total_seats: number }>(
       `SELECT COALESCE(SUM(num_seats), 0) as total_seats
        FROM reservations
@@ -60,7 +57,6 @@ export async function createReservation(tripId: string, userId: string, numSeats
     const nowIso = now.toISOString();
     const expiresIso = expiresAt.toISOString();
 
-    // Create reservation to hold the seats
     await db.run(
       `INSERT INTO reservations
         (id, trip_id, user_id, num_seats, price_at_reservation, booking_id, expires_at, created_at, updated_at)
@@ -68,7 +64,6 @@ export async function createReservation(tripId: string, userId: string, numSeats
       [reservationId, tripId, userId, numSeats, priceAtReservation, expiresIso, nowIso, nowIso]
     );
 
-    // Create the booking record in PENDING_PAYMENT state
     await db.run(
       `INSERT INTO bookings
         (id, trip_id, user_id, num_seats, state, price_at_booking, created_at, expires_at, updated_at)
@@ -76,7 +71,6 @@ export async function createReservation(tripId: string, userId: string, numSeats
       [bookingId, tripId, userId, numSeats, STATES.PENDING_PAYMENT, priceAtReservation, nowIso, expiresIso, nowIso]
     );
 
-    // Link reservation to booking
     await db.run(
       'UPDATE reservations SET booking_id = ? WHERE id = ?',
       [bookingId, reservationId]
@@ -106,7 +100,6 @@ export async function confirmReservationInternal(reservationId: string): Promise
       throw new HttpError(404, 'Reservation not found');
     }
 
-    // Check if already confirmed
     if (reservation.booking_id) {
       const booking = await db.get<BookingRow>(
         'SELECT * FROM bookings WHERE id = ?',
@@ -118,20 +111,17 @@ export async function confirmReservationInternal(reservationId: string): Promise
       }
     }
 
-    // Check if reservation has expired
     if (new Date(reservation.expires_at) < new Date()) {
       throw new HttpError(409, 'Reservation has expired');
     }
 
     const nowIso = new Date().toISOString();
 
-    // Update booking to confirmed state (seats are already reserved)
     await db.run(
       'UPDATE bookings SET state = ?, updated_at = ? WHERE id = ?',
       [STATES.CONFIRMED, nowIso, reservation.booking_id!]
     );
 
-    // Keep reservation for audit trail but mark as confirmed
     await db.run(
       'UPDATE reservations SET updated_at = ? WHERE id = ?',
       [nowIso, reservationId]

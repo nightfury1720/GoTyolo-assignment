@@ -24,14 +24,12 @@ router.get('/admin/trips/:tripId/metrics', async (req: Request, res: Response, n
         return res.status(404).json({ error: 'Trip not found' });
       }
 
-      // Get booking state summary
       const stateAgg = await db.all<StateAggregation>(
         `SELECT state, SUM(num_seats) as seats, COUNT(*) as count
          FROM bookings WHERE trip_id = ? GROUP BY state`,
         [req.params.tripId]
       );
 
-      // Calculate reserved seats (active reservations = held seats)
       const reservedSeatsResult = await db.get<{ total_reserved: number }>(
         `SELECT COALESCE(SUM(num_seats), 0) as total_reserved
          FROM reservations
@@ -41,7 +39,6 @@ router.get('/admin/trips/:tripId/metrics', async (req: Request, res: Response, n
 
       const reservedSeats = reservedSeatsResult?.total_reserved || 0;
 
-      // Calculate financial metrics
       const financial = await db.get<FinancialAggregation>(
         `SELECT
            SUM(CASE WHEN state IN ('CONFIRMED','CANCELLED') THEN price_at_booking ELSE 0 END) as gross,
@@ -59,7 +56,6 @@ router.get('/admin/trips/:tripId/metrics', async (req: Request, res: Response, n
         if (row.state === 'EXPIRED') summary.expired = row.count;
       });
 
-      // Booked seats = confirmed bookings + active reservations (pending payments)
       const confirmedSeats = stateAgg.find(row => row.state === 'CONFIRMED')?.seats || 0;
       const bookedSeats = confirmedSeats + reservedSeats;
       const availableSeats = trip.max_capacity - bookedSeats;
@@ -71,7 +67,7 @@ router.get('/admin/trips/:tripId/metrics', async (req: Request, res: Response, n
         occupancy_percent: occupancyPercent,
         total_seats: trip.max_capacity,
         booked_seats: bookedSeats,
-        available_seats: Math.max(0, availableSeats), // Ensure non-negative
+        available_seats: Math.max(0, availableSeats),
         booking_summary: summary,
         financial: {
           gross_revenue: financial?.gross || 0,
@@ -92,16 +88,13 @@ router.get('/admin/trips/at-risk', async (req: Request, res: Response, next: Nex
       const inSevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
       const todayIso = now.toISOString();
 
-      // Get trips departing within 7 days
       const trips = await db.all<TripRow>(
         `SELECT * FROM trips
          WHERE start_date <= ? AND start_date >= ? AND status = 'PUBLISHED'`,
         [inSevenDays, todayIso]
       );
 
-      // Calculate occupancy for each trip based on reservations
       const atRisk = await Promise.all(trips.map(async (trip) => {
-        // Get confirmed bookings
         const confirmedResult = await db.get<{ confirmed_seats: number }>(
           `SELECT COALESCE(SUM(num_seats), 0) as confirmed_seats
            FROM bookings
@@ -109,7 +102,6 @@ router.get('/admin/trips/at-risk', async (req: Request, res: Response, next: Nex
           [trip.id]
         );
 
-        // Get active reservations (pending payments)
         const reservedResult = await db.get<{ reserved_seats: number }>(
           `SELECT COALESCE(SUM(num_seats), 0) as reserved_seats
            FROM reservations
@@ -131,7 +123,6 @@ router.get('/admin/trips/at-risk', async (req: Request, res: Response, next: Nex
         };
       }));
 
-      // Filter for trips with < 50% occupancy
       const filteredAtRisk = atRisk.filter(trip => trip.occupancy_percent < 50);
 
       const response: AtRiskTripsResponse = { at_risk_trips: filteredAtRisk };

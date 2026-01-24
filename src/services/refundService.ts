@@ -36,7 +36,6 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
     const daysLeft = daysUntil(booking.start_date);
     const refundable = daysLeft > booking.refundable_until_days_before;
 
-    // Cannot cancel pending payment after refund cutoff
     if (booking.state === STATES.PENDING_PAYMENT && !refundable) {
       throw new HttpError(409, 'Cannot cancel pending payment after refund cutoff');
     }
@@ -49,7 +48,6 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
     let refundAmount = 0;
 
     if (booking.state === STATES.PENDING_PAYMENT) {
-      // Cancel pending payment - release reservation
       if (reservation) {
         await db.run('DELETE FROM reservations WHERE id = ?', [reservation.id]);
         logger.info('Reservation released on pending payment cancellation', {
@@ -59,28 +57,21 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
         });
       }
 
-      // Calculate refund for pending payments (if refundable)
       if (refundable) {
         const feePercent = booking.cancellation_fee_percent || 0;
         refundAmount = Number((booking.price_at_booking * (1 - feePercent / 100)).toFixed(2));
       }
 
     } else if (booking.state === STATES.CONFIRMED) {
-      // Cancel confirmed booking
       const event = refundable ? EVENTS.CANCEL_BEFORE_CUTOFF : EVENTS.CANCEL_AFTER_CUTOFF;
       const nextState = transition(booking.state, event);
 
-      // Calculate refund for confirmed bookings
       if (refundable) {
         const feePercent = booking.cancellation_fee_percent || 0;
         refundAmount = Number((booking.price_at_booking * (1 - feePercent / 100)).toFixed(2));
       } else {
-        refundAmount = 0; // No refund after cutoff
+        refundAmount = 0;
       }
-
-      // For confirmed bookings, we DON'T release seats back to available_seats
-      // The seats remain "booked" since the trip is imminent (after cutoff)
-      // or the user gets a full refund (before cutoff) but keeps the seats
 
       await db.run(
         `UPDATE bookings SET state = ?, refund_amount = ?, cancelled_at = ?, updated_at = ? WHERE id = ?`,
@@ -88,7 +79,6 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
       );
     }
 
-    // Update booking state and refund amount
     const nowIso = new Date().toISOString();
     await db.run(
       `UPDATE bookings SET state = ?, refund_amount = ?, cancelled_at = ?, updated_at = ? WHERE id = ?`,

@@ -10,6 +10,3 @@ export function transition(currentState: BookingState, event: BookingEvent): Boo
 
   return nextState;
 }
-
-
-export { STATES, EVENTS };

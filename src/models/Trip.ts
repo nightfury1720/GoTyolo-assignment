@@ -35,28 +35,6 @@ export class Trip {
     return row ? new Trip(row) : null;
   }
 
-
-  daysUntilStart(): number {
-    const startDate = new Date(this.start_date);
-    const now = new Date();
-    const diffTime = startDate.getTime() - now.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays;
-  }
-
-  isRefundable(): boolean {
-    const daysUntilStart = this.daysUntilStart();
-    return daysUntilStart > this.refundable_until_days_before;
-  }
-
-  calculateRefund(priceAtBooking: number): number {
-    if (!this.isRefundable()) {
-      return 0;
-    }
-    const refundPercent = 1 - this.cancellation_fee_percent / 100;
-    return Number((priceAtBooking * refundPercent).toFixed(2));
-  }
-
   toJSON() {
     return {
       id: this.id,

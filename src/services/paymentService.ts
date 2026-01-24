@@ -1,6 +1,5 @@
 import { db } from '../db/database';
-import { STATES, EVENTS, HttpError, BookingRow, ReservationRow } from '../types';
-import { transition } from '../utils/stateMachine';
+import { STATES, HttpError, BookingRow, ReservationRow } from '../types';
 import { logger } from '../utils/logger';
 import { confirmReservationInternal } from './bookingService';
 
@@ -25,7 +24,6 @@ export async function processWebhook(
   }
 
   return db.transaction(async () => {
-    // Check for duplicate idempotency key
     const existingIdem = await db.get<{ id: string }>(
       'SELECT id FROM bookings WHERE idempotency_key = ?',
       [idempotencyKey]
@@ -44,17 +42,14 @@ export async function processWebhook(
 
     if (!booking) {
       logger.warn('Webhook received for non-existent booking', { bookingId });
-      // Return 200 OK even for invalid booking as per requirements
       return { id: bookingId, state: 'NOT_FOUND', message: 'booking not found' };
     }
 
-    // Idempotency check - if we've already processed this webhook, return current state
     if (booking.idempotency_key === idempotencyKey) {
       logger.info('Duplicate webhook processed idempotently', { bookingId, idempotencyKey });
       return booking;
     }
 
-    // Only process webhooks for pending payments
     if (booking.state !== STATES.PENDING_PAYMENT) {
       logger.info('Webhook received for non-pending booking', {
         bookingId,
@@ -67,7 +62,6 @@ export async function processWebhook(
     const nowIso = new Date().toISOString();
 
     if (normalizedStatus === 'success') {
-      // Payment successful - confirm the reservation
       try {
         const reservation = await db.get<ReservationRow>(
           'SELECT * FROM reservations WHERE booking_id = ?',
@@ -79,10 +73,8 @@ export async function processWebhook(
           throw new Error('Reservation not found for booking');
         }
 
-        // Confirm the reservation (convert to confirmed booking)
         await confirmReservationInternal(reservation.id);
 
-        // Update booking with payment details
         await db.run(
           `UPDATE bookings SET idempotency_key = ?, payment_reference = ?, updated_at = ? WHERE id = ?`,
           [idempotencyKey, idempotencyKey, nowIso, bookingId]
@@ -103,14 +95,12 @@ export async function processWebhook(
         throw err;
       }
     } else {
-      // Payment failed - expire the booking and release the reservation
       const reservation = await db.get<ReservationRow>(
         'SELECT * FROM reservations WHERE booking_id = ?',
         [bookingId]
       );
 
       if (reservation) {
-        // Delete reservation to release the seats back to availability
         await db.run('DELETE FROM reservations WHERE id = ?', [reservation.id]);
         logger.info('Reservation released due to payment failure', {
           reservationId: reservation.id,
@@ -119,7 +109,6 @@ export async function processWebhook(
         });
       }
 
-      // Update booking to expired state
       await db.run(
         `UPDATE bookings SET state = ?, idempotency_key = ?, payment_reference = ?, updated_at = ? WHERE id = ?`,
         [STATES.EXPIRED, idempotencyKey, idempotencyKey, nowIso, bookingId]
