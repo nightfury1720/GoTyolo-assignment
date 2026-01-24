@@ -25,68 +25,66 @@ export async function createBooking(tripId: string, userId: string, numSeats: nu
       throw new HttpError(404, 'Trip not found or not published');
     }
 
-    await db.run(
-      `UPDATE bookings
-       SET state = ?, updated_at = ?
-       WHERE trip_id = ? AND state = ? AND expires_at < ?`,
-      [STATES.EXPIRED, now.toISOString(), tripId, STATES.PENDING_PAYMENT, now.toISOString()]
-    );
-
-    const seatCounts = await db.get<{ 
-      reserved_seats: number; 
-      confirmed_seats: number; 
-      total_occupied: number;
-    }>(
-      `SELECT 
-        COALESCE(SUM(CASE WHEN state = ? AND expires_at > ? THEN num_seats ELSE 0 END), 0) as reserved_seats,
-        COALESCE(SUM(CASE WHEN state = ? THEN num_seats ELSE 0 END), 0) as confirmed_seats,
-        COALESCE(SUM(CASE 
-          WHEN (state = ? AND expires_at > ?) OR state = ? 
-          THEN num_seats 
-          ELSE 0 
-        END), 0) as total_occupied
+    // Calculate seats to release from expired bookings BEFORE updating them
+    const expiredSeatsResult = await db.get<{ expired_seats: number }>(
+      `SELECT COALESCE(SUM(num_seats), 0) as expired_seats
        FROM bookings
-       WHERE trip_id = ?`,
-      [STATES.PENDING_PAYMENT, now.toISOString(), STATES.CONFIRMED, STATES.PENDING_PAYMENT, now.toISOString(), STATES.CONFIRMED, tripId]
+       WHERE trip_id = ? AND state = ? AND expires_at < ?`,
+      [tripId, STATES.PENDING_PAYMENT, now.toISOString()]
     );
 
-    const totalOccupied = seatCounts?.total_occupied || 0;
-    const availableSeats = trip.max_capacity - totalOccupied;
-
-    if (availableSeats < numSeats) {
-      throw new HttpError(409, `Not enough seats available. ${availableSeats} seats remaining, ${numSeats} requested`);
-    }
-
-    logger.info('Seat availability check passed', {
-      tripId,
-      maxCapacity: trip.max_capacity,
-      reservedSeats: seatCounts?.reserved_seats || 0,
-      confirmedSeats: seatCounts?.confirmed_seats || 0,
-      totalOccupied,
-      availableSeats,
-      requestedSeats: numSeats
-    });
-
-    const priceAtBooking = trip.price * numSeats;
+    const expiredSeats = expiredSeatsResult?.expired_seats || 0;
     const nowIso = now.toISOString();
     const expiresIso = expiresAt.toISOString();
+    const priceAtBooking = trip.price * numSeats;
 
+    // Expire old pending bookings and update trip seats in one go
+    // First expire bookings
+    if (expiredSeats > 0) {
+      await db.run(
+        `UPDATE bookings
+         SET state = ?, updated_at = ?
+         WHERE trip_id = ? AND state = ? AND expires_at < ?`,
+        [STATES.EXPIRED, nowIso, tripId, STATES.PENDING_PAYMENT, now.toISOString()]
+      );
+    }
+
+    // Calculate available seats: current - expired seats (to be released) - new booking seats
+    const currentAvailableSeats = trip.available_seats + expiredSeats;
+    const finalAvailableSeats = currentAvailableSeats - numSeats;
+
+    // Check if enough seats are available (prevent negative available_seats)
+    if (finalAvailableSeats < 0) {
+      throw new HttpError(409, `Not enough seats available. ${currentAvailableSeats} seats remaining, ${numSeats} requested`);
+    }
+
+    // Update trip: release expired seats and decrement for new booking in one UPDATE
     await db.run(
+      `UPDATE trips 
+       SET available_seats = available_seats + ? - ?, updated_at = ? 
+       WHERE id = ?`,
+      [expiredSeats, numSeats, nowIso, tripId]
+    );
+
+    // Insert booking and get it back using RETURNING
+    const bookingRow = await db.get<BookingRow>(
       `INSERT INTO bookings
         (id, trip_id, user_id, num_seats, state, price_at_booking, created_at, expires_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       RETURNING *`,
       [bookingId, tripId, userId, numSeats, STATES.PENDING_PAYMENT, priceAtBooking, nowIso, expiresIso, nowIso]
     );
 
-    logger.info('Booking created successfully', {
+    logger.info('Booking created successfully and seats reserved', {
       bookingId,
       tripId,
       userId,
       numSeats,
-      expiresAt: expiresIso
+      expiresAt: expiresIso,
+      seatsReserved: numSeats,
+      expiredSeatsReleased: expiredSeats
     });
 
-    const bookingRow = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     return Booking.fromRow(bookingRow)!;
   });
 }
@@ -95,20 +93,18 @@ export async function confirmBooking(bookingId: string): Promise<Booking> {
   return db.transaction(async () => {
     const nowIso = new Date().toISOString();
     
+    // Get booking with expiry check in one query
     const booking = await db.get<BookingRow>(
-      'SELECT * FROM bookings WHERE id = ? AND expires_at > ?',
-      [bookingId, nowIso]
+      'SELECT * FROM bookings WHERE id = ?',
+      [bookingId]
     );
 
     if (!booking) {
-      const expiredBooking = await db.get<BookingRow>(
-        'SELECT * FROM bookings WHERE id = ?',
-        [bookingId]
-      );
-      if (expiredBooking) {
-        throw new HttpError(409, 'Booking has expired');
-      }
       throw new HttpError(404, 'Booking not found');
+    }
+
+    if (booking.expires_at && new Date(booking.expires_at) <= new Date(nowIso)) {
+      throw new HttpError(409, 'Booking has expired');
     }
 
     if (booking.state === STATES.CONFIRMED) {
@@ -120,8 +116,9 @@ export async function confirmBooking(bookingId: string): Promise<Booking> {
       throw new HttpError(409, `Cannot confirm booking in state: ${booking.state}`);
     }
 
-    await db.run(
-      'UPDATE bookings SET state = ?, updated_at = ? WHERE id = ?',
+    // Update and return in one query using RETURNING
+    const updatedBooking = await db.get<BookingRow>(
+      'UPDATE bookings SET state = ?, updated_at = ? WHERE id = ? RETURNING *',
       [STATES.CONFIRMED, nowIso, bookingId]
     );
 
@@ -131,12 +128,7 @@ export async function confirmBooking(bookingId: string): Promise<Booking> {
       numSeats: booking.num_seats,
     });
 
-    const bookingRow = await db.get<BookingRow>(
-      'SELECT * FROM bookings WHERE id = ?',
-      [bookingId]
-    );
-
-    return Booking.fromRow(bookingRow)!;
+    return Booking.fromRow(updatedBooking)!;
   });
 }
 

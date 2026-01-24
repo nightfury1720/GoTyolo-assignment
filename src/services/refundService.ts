@@ -33,6 +33,11 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
       throw new HttpError(409, 'Booking already cancelled or expired');
     }
 
+    // Prevent cancelling PENDING_PAYMENT bookings that have been processed by webhook
+    if (booking.state === STATES.PENDING_PAYMENT && booking.idempotency_key) {
+      throw new HttpError(409, 'Cannot cancel pending payment that has been processed by payment webhook');
+    }
+
     const daysLeft = daysUntil(booking.start_date);
     const refundable = daysLeft > booking.refundable_until_days_before;
 
@@ -41,35 +46,49 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
     }
 
     let refundAmount = 0;
+    let shouldReleaseSeats = false;
 
     if (booking.state === STATES.PENDING_PAYMENT) {
       if (refundable) {
         const feePercent = booking.cancellation_fee_percent || 0;
         refundAmount = Number((booking.price_at_booking * (1 - feePercent / 100)).toFixed(2));
+        shouldReleaseSeats = true; // Release seats immediately before cutoff
       }
 
     } else if (booking.state === STATES.CONFIRMED) {
-      const event = refundable ? EVENTS.CANCEL_BEFORE_CUTOFF : EVENTS.CANCEL_AFTER_CUTOFF;
-      const nextState = transition(booking.state, event);
-
       if (refundable) {
         const feePercent = booking.cancellation_fee_percent || 0;
         refundAmount = Number((booking.price_at_booking * (1 - feePercent / 100)).toFixed(2));
+        shouldReleaseSeats = true; // Release seats immediately before cutoff
       } else {
         refundAmount = 0;
+        // Don't release seats after cutoff (trip is imminent)
       }
-
-      await db.run(
-        `UPDATE bookings SET state = ?, refund_amount = ?, cancelled_at = ?, updated_at = ? WHERE id = ?`,
-        [nextState, refundAmount, new Date().toISOString(), new Date().toISOString(), bookingId]
-      );
     }
 
     const nowIso = new Date().toISOString();
-    await db.run(
-      `UPDATE bookings SET state = ?, refund_amount = ?, cancelled_at = ?, updated_at = ? WHERE id = ?`,
+    
+    // Update booking state and get it back using RETURNING
+    const updated = await db.get<BookingRow>(
+      `UPDATE bookings SET state = ?, refund_amount = ?, cancelled_at = ?, updated_at = ? WHERE id = ? RETURNING *`,
       [STATES.CANCELLED, refundAmount, nowIso, nowIso, bookingId]
     );
+
+    // Release seats if before cutoff
+    if (shouldReleaseSeats) {
+      await db.run(
+        `UPDATE trips 
+         SET available_seats = available_seats + ?, updated_at = ? 
+         WHERE id = ?`,
+        [booking.num_seats, nowIso, booking.trip_id]
+      );
+      
+      logger.info('Seats released on cancellation', {
+        tripId: booking.trip_id,
+        seatsReleased: booking.num_seats,
+        bookingId,
+      });
+    }
 
     logger.info('Booking cancelled successfully', {
       bookingId,
@@ -79,7 +98,6 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
       daysUntilTrip: Math.round(daysLeft),
     });
 
-    const updated = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     return updated!;
   });
 }

@@ -1,4 +1,4 @@
-import { STATES, EVENTS, TRANSITIONS, BookingState, BookingEvent } from '../types';
+import { TRANSITIONS, BookingState, BookingEvent } from '../types';
 
 export function transition(currentState: BookingState, event: BookingEvent): BookingState {
   const stateTransitions = TRANSITIONS[currentState];

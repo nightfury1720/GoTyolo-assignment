@@ -1,7 +1,6 @@
 import { db } from '../db/database';
 import { STATES, HttpError, BookingRow } from '../types';
 import { logger } from '../utils/logger';
-import { confirmBooking } from './bookingService';
 
 interface WebhookResult {
   id: string;
@@ -24,25 +23,28 @@ export async function processWebhook(
   }
 
   return db.transaction(async () => {
-    const existingIdem = await db.get<{ id: string }>(
-      'SELECT id FROM bookings WHERE idempotency_key = ?',
-      [idempotencyKey]
+    // Check idempotency and get booking in one query using COALESCE
+    const booking = await db.get<BookingRow & { existing_id?: string }>(
+      `SELECT b.*, 
+              (SELECT id FROM bookings WHERE idempotency_key = ? LIMIT 1) as existing_id
+       FROM bookings b
+       WHERE b.id = ?`,
+      [idempotencyKey, bookingId]
     );
-
-    if (existingIdem && existingIdem.id !== bookingId) {
-      logger.warn('Duplicate idempotency key for different booking', {
-        idempotencyKey,
-        existingBookingId: existingIdem.id,
-        requestedBookingId: bookingId,
-      });
-      return { id: bookingId, state: 'DUPLICATE_KEY', message: 'duplicate webhook' };
-    }
-
-    const booking = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
 
     if (!booking) {
       logger.warn('Webhook received for non-existent booking', { bookingId });
       return { id: bookingId, state: 'NOT_FOUND', message: 'booking not found' };
+    }
+
+    // Check if idempotency key exists for different booking
+    if (booking.existing_id && booking.existing_id !== bookingId) {
+      logger.warn('Duplicate idempotency key for different booking', {
+        idempotencyKey,
+        existingBookingId: booking.existing_id,
+        requestedBookingId: bookingId,
+      });
+      return { id: bookingId, state: 'DUPLICATE_KEY', message: 'duplicate webhook' };
     }
 
     if (booking.idempotency_key === idempotencyKey) {
@@ -62,42 +64,49 @@ export async function processWebhook(
     const nowIso = new Date().toISOString();
 
     if (normalizedStatus === 'success') {
-      try {
-        await confirmBooking(bookingId);
+      // Update booking to CONFIRMED and set idempotency_key in one query, then release seats if needed
+      const updated = await db.get<BookingRow>(
+        `UPDATE bookings 
+         SET state = ?, idempotency_key = ?, payment_reference = ?, updated_at = ? 
+         WHERE id = ? 
+         RETURNING *`,
+        [STATES.CONFIRMED, idempotencyKey, idempotencyKey, nowIso, bookingId]
+      );
 
-        await db.run(
-          `UPDATE bookings SET idempotency_key = ?, payment_reference = ?, updated_at = ? WHERE id = ?`,
-          [idempotencyKey, idempotencyKey, nowIso, bookingId]
-        );
+      logger.info('Payment webhook processed successfully', {
+        bookingId,
+        newState: STATES.CONFIRMED,
+        idempotencyKey
+      });
 
-        logger.info('Payment webhook processed successfully', {
-          bookingId,
-          newState: STATES.CONFIRMED,
-          idempotencyKey
-        });
-
-      } catch (err) {
-        logger.error('Failed to confirm booking on payment success', {
-          bookingId,
-          idempotencyKey,
-          error: err instanceof Error ? err.message : 'Unknown error',
-        });
-        throw err;
-      }
+      return updated!;
     } else {
-      await db.run(
-        `UPDATE bookings SET state = ?, idempotency_key = ?, payment_reference = ?, updated_at = ? WHERE id = ?`,
+      // Update booking to EXPIRED and release seats in one transaction
+      const updated = await db.get<BookingRow>(
+        `UPDATE bookings 
+         SET state = ?, idempotency_key = ?, payment_reference = ?, updated_at = ? 
+         WHERE id = ? 
+         RETURNING *`,
         [STATES.EXPIRED, idempotencyKey, idempotencyKey, nowIso, bookingId]
       );
 
-      logger.info('Payment webhook processed - payment failed', {
+      // Release seats when payment fails
+      await db.run(
+        `UPDATE trips 
+         SET available_seats = available_seats + ?, updated_at = ? 
+         WHERE id = ?`,
+        [booking.num_seats, nowIso, booking.trip_id]
+      );
+
+      logger.info('Payment webhook processed - payment failed, seats released', {
         bookingId,
         newState: STATES.EXPIRED,
-        idempotencyKey
+        idempotencyKey,
+        seatsReleased: booking.num_seats
       });
-    }
 
-    const updated = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);
-    return updated!;
+      return updated!;
+    }
   });
 }
+

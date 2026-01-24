@@ -19,21 +19,32 @@ export async function expirePendingBookings(): Promise<void> {
   for (const booking of expiredBookings) {
     try {
       await db.transaction(async () => {
-        const fresh = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [booking.id]);
-
-        if (!fresh || fresh.state !== STATES.PENDING_PAYMENT) return;
-
-        await db.run(
-          'UPDATE bookings SET state = ?, updated_at = ? WHERE id = ?',
-          [STATES.EXPIRED, nowIso, booking.id]
+        // Update booking state and check if it was still pending in one query using RETURNING
+        const updated = await db.get<BookingRow>(
+          `UPDATE bookings 
+           SET state = ?, updated_at = ? 
+           WHERE id = ? AND state = ? 
+           RETURNING *`,
+          [STATES.EXPIRED, nowIso, booking.id, STATES.PENDING_PAYMENT]
         );
 
-        logger.info('Booking auto-expired', {
-          bookingId: booking.id,
-          tripId: booking.trip_id,
-          numSeats: booking.num_seats,
-          expiredAt: booking.expires_at
-        });
+        // Only release seats if booking was actually updated (was still pending)
+        if (updated) {
+          // Release seats when booking expires
+          await db.run(
+            `UPDATE trips 
+             SET available_seats = available_seats + ?, updated_at = ? 
+             WHERE id = ?`,
+            [updated.num_seats, nowIso, updated.trip_id]
+          );
+
+          logger.info('Booking auto-expired and seats released', {
+            bookingId: booking.id,
+            tripId: booking.trip_id,
+            numSeats: booking.num_seats,
+            expiredAt: booking.expires_at
+          });
+        }
       });
     } catch (err) {
       logger.error('Failed to expire booking', {
