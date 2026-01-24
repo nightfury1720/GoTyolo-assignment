@@ -1,6 +1,6 @@
 -- Complete GoTyolo database schema
--- Includes trips, bookings, and reservations tables with proper indexing
--- Reservations table acts as seat buffer for concurrency control
+-- Includes trips and bookings tables with proper indexing
+-- Bookings with PENDING_PAYMENT state act as seat buffer for concurrency control
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -43,24 +43,6 @@ CREATE INDEX IF NOT EXISTS idx_bookings_expires_at ON bookings(expires_at);
 CREATE INDEX IF NOT EXISTS idx_bookings_idempotency_key ON bookings(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_trips_status ON trips(status);
 
-CREATE TABLE IF NOT EXISTS reservations (
-  id VARCHAR(36) PRIMARY KEY,
-  trip_id VARCHAR(36) NOT NULL,
-  user_id VARCHAR(36) NOT NULL,
-  num_seats INTEGER NOT NULL,
-  price_at_reservation DECIMAL(10,2) NOT NULL,
-  booking_id VARCHAR(36),  -- NULL until Phase 2 confirmation
-  expires_at TIMESTAMP NOT NULL,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  FOREIGN KEY (trip_id) REFERENCES trips(id),
-  FOREIGN KEY (booking_id) REFERENCES bookings(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_reservations_trip_id ON reservations(trip_id);
-CREATE INDEX IF NOT EXISTS idx_reservations_expires_at ON reservations(expires_at);
-CREATE INDEX IF NOT EXISTS idx_reservations_booking_id ON reservations(booking_id);
-
--- Additional index for efficient cleanup of expired unfulfilled reservations
-CREATE INDEX IF NOT EXISTS idx_reservations_expires_at_active ON reservations(expires_at) WHERE booking_id IS NULL;
+-- Index for efficient seat availability queries using PENDING_PAYMENT bookings
+CREATE INDEX IF NOT EXISTS idx_bookings_pending_availability ON bookings(trip_id, expires_at) WHERE state = 'PENDING_PAYMENT';
 

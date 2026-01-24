@@ -1,7 +1,7 @@
 import { db } from '../db/database';
-import { STATES, HttpError, BookingRow, ReservationRow } from '../types';
+import { STATES, HttpError, BookingRow } from '../types';
 import { logger } from '../utils/logger';
-import { confirmReservationInternal } from './bookingService';
+import { confirmBooking } from './bookingService';
 
 interface WebhookResult {
   id: string;
@@ -63,17 +63,7 @@ export async function processWebhook(
 
     if (normalizedStatus === 'success') {
       try {
-        const reservation = await db.get<ReservationRow>(
-          'SELECT * FROM reservations WHERE booking_id = ?',
-          [bookingId]
-        );
-
-        if (!reservation) {
-          logger.error('No reservation found for successful payment', { bookingId });
-          throw new Error('Reservation not found for booking');
-        }
-
-        await confirmReservationInternal(reservation.id);
+        await confirmBooking(bookingId);
 
         await db.run(
           `UPDATE bookings SET idempotency_key = ?, payment_reference = ?, updated_at = ? WHERE id = ?`,
@@ -87,7 +77,7 @@ export async function processWebhook(
         });
 
       } catch (err) {
-        logger.error('Failed to confirm reservation on payment success', {
+        logger.error('Failed to confirm booking on payment success', {
           bookingId,
           idempotencyKey,
           error: err instanceof Error ? err.message : 'Unknown error',
@@ -95,20 +85,6 @@ export async function processWebhook(
         throw err;
       }
     } else {
-      const reservation = await db.get<ReservationRow>(
-        'SELECT * FROM reservations WHERE booking_id = ?',
-        [bookingId]
-      );
-
-      if (reservation) {
-        await db.run('DELETE FROM reservations WHERE id = ?', [reservation.id]);
-        logger.info('Reservation released due to payment failure', {
-          reservationId: reservation.id,
-          bookingId,
-          numSeats: reservation.num_seats
-        });
-      }
-
       await db.run(
         `UPDATE bookings SET state = ?, idempotency_key = ?, payment_reference = ?, updated_at = ? WHERE id = ?`,
         [STATES.EXPIRED, idempotencyKey, idempotencyKey, nowIso, bookingId]

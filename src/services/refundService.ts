@@ -1,5 +1,5 @@
 import { db } from '../db/database';
-import { STATES, EVENTS, HttpError, BookingRow, ReservationRow } from '../types';
+import { STATES, EVENTS, HttpError, BookingRow } from '../types';
 import { transition } from '../utils/stateMachine';
 import { logger } from '../utils/logger';
 
@@ -40,23 +40,9 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
       throw new HttpError(409, 'Cannot cancel pending payment after refund cutoff');
     }
 
-    const reservation = await db.get<ReservationRow>(
-      'SELECT * FROM reservations WHERE booking_id = ?',
-      [bookingId]
-    );
-
     let refundAmount = 0;
 
     if (booking.state === STATES.PENDING_PAYMENT) {
-      if (reservation) {
-        await db.run('DELETE FROM reservations WHERE id = ?', [reservation.id]);
-        logger.info('Reservation released on pending payment cancellation', {
-          reservationId: reservation.id,
-          bookingId,
-          numSeats: reservation.num_seats
-        });
-      }
-
       if (refundable) {
         const feePercent = booking.cancellation_fee_percent || 0;
         refundAmount = Number((booking.price_at_booking * (1 - feePercent / 100)).toFixed(2));
@@ -91,7 +77,6 @@ export async function cancelBookingWithRefund(bookingId: string): Promise<Bookin
       refundable,
       refundAmount,
       daysUntilTrip: Math.round(daysLeft),
-      hadReservation: !!reservation,
     });
 
     const updated = await db.get<BookingRow>('SELECT * FROM bookings WHERE id = ?', [bookingId]);

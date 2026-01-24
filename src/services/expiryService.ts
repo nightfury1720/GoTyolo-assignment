@@ -1,5 +1,5 @@
 import { db } from '../db/database';
-import { STATES, BookingRow, ReservationRow } from '../types';
+import { STATES, BookingRow } from '../types';
 import { logger } from '../utils/logger';
 
 export async function expirePendingBookings(): Promise<void> {
@@ -10,20 +10,10 @@ export async function expirePendingBookings(): Promise<void> {
     [STATES.PENDING_PAYMENT, nowIso]
   );
 
-  const expiredReservations = await db.all<ReservationRow>(
-    `SELECT r.* FROM reservations r
-     LEFT JOIN bookings b ON r.booking_id = b.id
-     WHERE r.expires_at < ?
-     AND (r.booking_id IS NULL OR b.state = ?)`,
-    [nowIso, STATES.PENDING_PAYMENT]
-  );
+  if (expiredBookings.length === 0) return;
 
-  const totalToProcess = expiredBookings.length + expiredReservations.length;
-  if (totalToProcess === 0) return;
-
-  logger.info('Found expired bookings and reservations to process', {
+  logger.info('Found expired bookings to process', {
     expiredBookings: expiredBookings.length,
-    expiredReservations: expiredReservations.length,
   });
 
   for (const booking of expiredBookings) {
@@ -33,20 +23,6 @@ export async function expirePendingBookings(): Promise<void> {
 
         if (!fresh || fresh.state !== STATES.PENDING_PAYMENT) return;
 
-        const reservation = await db.get<ReservationRow>(
-          'SELECT * FROM reservations WHERE booking_id = ?',
-          [booking.id]
-        );
-
-        if (reservation) {
-          await db.run('DELETE FROM reservations WHERE id = ?', [reservation.id]);
-          logger.info('Reservation released due to booking expiry', {
-            reservationId: reservation.id,
-            bookingId: booking.id,
-            numSeats: reservation.num_seats,
-            tripId: reservation.trip_id
-          });
-        }
         await db.run(
           'UPDATE bookings SET state = ?, updated_at = ? WHERE id = ?',
           [STATES.EXPIRED, nowIso, booking.id]
@@ -62,33 +38,6 @@ export async function expirePendingBookings(): Promise<void> {
     } catch (err) {
       logger.error('Failed to expire booking', {
         bookingId: booking.id,
-        error: err instanceof Error ? err.message : 'Unknown error',
-      });
-    }
-  }
-
-  for (const reservation of expiredReservations) {
-    try {
-      await db.transaction(async () => {
-        const fresh = await db.get<ReservationRow>(
-          'SELECT * FROM reservations WHERE id = ?',
-          [reservation.id]
-        );
-
-        if (!fresh) return; // Already deleted
-
-        await db.run('DELETE FROM reservations WHERE id = ?', [reservation.id]);
-        logger.info('Expired reservation cleaned up', {
-          reservationId: reservation.id,
-          tripId: reservation.trip_id,
-          numSeats: reservation.num_seats,
-          userId: reservation.user_id,
-          expiredAt: reservation.expires_at
-        });
-      });
-    } catch (err) {
-      logger.error('Failed to clean up expired reservation', {
-        reservationId: reservation.id,
         error: err instanceof Error ? err.message : 'Unknown error',
       });
     }

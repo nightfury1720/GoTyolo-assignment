@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { db } from '../db/database';
 import { TripRow, TripMetricsResponse, AtRiskTripsResponse } from '../types';
+import { expirePendingBookings } from '../services/expiryService';
 
 const router = Router();
 
@@ -32,9 +33,9 @@ router.get('/admin/trips/:tripId/metrics', async (req: Request, res: Response, n
 
       const reservedSeatsResult = await db.get<{ total_reserved: number }>(
         `SELECT COALESCE(SUM(num_seats), 0) as total_reserved
-         FROM reservations
-         WHERE trip_id = ? AND expires_at > ?`,
-        [req.params.tripId, new Date().toISOString()]
+         FROM bookings
+         WHERE trip_id = ? AND state = ? AND expires_at > ?`,
+        [req.params.tripId, 'PENDING_PAYMENT', new Date().toISOString()]
       );
 
       const reservedSeats = reservedSeatsResult?.total_reserved || 0;
@@ -104,9 +105,9 @@ router.get('/admin/trips/at-risk', async (req: Request, res: Response, next: Nex
 
         const reservedResult = await db.get<{ reserved_seats: number }>(
           `SELECT COALESCE(SUM(num_seats), 0) as reserved_seats
-           FROM reservations
-           WHERE trip_id = ? AND expires_at > ?`,
-          [trip.id, now.toISOString()]
+           FROM bookings
+           WHERE trip_id = ? AND state = ? AND expires_at > ?`,
+          [trip.id, 'PENDING_PAYMENT', now.toISOString()]
         );
 
         const confirmedSeats = confirmedResult?.confirmed_seats || 0;
@@ -180,6 +181,15 @@ router.get('/admin/metrics', async (req: Request, res: Response, next: NextFunct
     }));
 
     res.json({ trips: metrics });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/admin/expire-bookings', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await expirePendingBookings();
+    res.json({ message: 'Expiry job completed successfully' });
   } catch (err) {
     next(err);
   }

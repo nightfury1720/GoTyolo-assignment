@@ -30,7 +30,6 @@ export async function seed(): Promise<void> {
   await initializeDb();
 
   await db.transaction(async () => {
-    await db.run('DELETE FROM reservations');
     await db.run('DELETE FROM bookings');
     await db.run('DELETE FROM trips');
 
@@ -144,18 +143,6 @@ export async function seed(): Promise<void> {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [bookingId, entry.trip.id, userId, entry.num_seats, entry.state, priceAt, created, entry.expires_at || null, entry.cancelled_at || null, entry.refund_amount || null, created]
       );
-
-      if (entry.state === STATES.PENDING_PAYMENT) {
-        const reservationId = uuidv4();
-        const expiresAt = entry.expires_at || new Date(Date.now() + 15 * 60 * 1000).toISOString();
-
-        await db.run(
-          `INSERT INTO reservations
-            (id, trip_id, user_id, num_seats, price_at_reservation, booking_id, expires_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [reservationId, entry.trip.id, userId, entry.num_seats, priceAt, bookingId, expiresAt, created, created]
-        );
-      }
     }
 
     logger.info('Database seeded successfully', { trips: trips.length, bookings: sampleBookings.length });
