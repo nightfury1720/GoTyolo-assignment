@@ -4,8 +4,128 @@
 
 ---
 
+## ❓ Questions & Answers
+
+### How do you prevent overbooking?
+
+The system prevents overbooking using **PostgreSQL transactions with row-level locking** (`SELECT FOR UPDATE`). Here's how it works:
+
+1. **Transaction-based locking**: When creating a booking, the system locks the trip row using `SELECT FOR UPDATE` within a transaction
+2. **Dynamic seat calculation**: Available seats are calculated by summing:
+   - All `PENDING_PAYMENT` bookings with `expires_at > NOW()`
+   - All `CONFIRMED` bookings
+3. **Atomic check-and-reserve**: The availability check and booking creation happen atomically within the same transaction
+4. **Conflict detection**: If available seats < requested seats, the transaction fails with `409 Conflict`
+
+**Formula:**
+```
+Available Seats = max_capacity - (pending_seats + confirmed_seats)
+```
+
+This ensures that concurrent booking requests are serialized, and only the correct number of bookings can succeed based on actual availability.
+
+### How do you handle duplicate webhooks?
+
+Duplicate webhooks are handled through **idempotency keys** with a unique database constraint:
+
+1. **Unique constraint**: Each webhook includes an `idempotency_key` that's stored in `bookings.idempotency_key` (UNIQUE constraint)
+2. **Duplicate detection**: On webhook receipt:
+   - If `idempotency_key` exists for a different booking → return duplicate error
+   - If `idempotency_key` matches current booking → return current state (idempotent)
+   - Otherwise → process webhook and store the key
+3. **Safe retries**: Payment providers can safely retry failed webhooks without causing duplicate state changes
+
+This ensures that the same webhook can be processed multiple times safely, and duplicate webhooks from different sources are detected and rejected.
+
+### What happens if payment webhook never arrives? How do you auto-expire bookings?
+
+If a payment webhook never arrives, bookings automatically expire through a **background cleanup job**:
+
+1. **Expiration timestamp**: Each booking in `PENDING_PAYMENT` state has an `expires_at` timestamp (15 minutes after creation)
+2. **Background job**: The `expirePendingBookings()` function runs periodically (via cron job, default: every 5 minutes)
+3. **Expiration logic**: Finds all bookings where:
+   - `state = PENDING_PAYMENT`
+   - `expires_at < NOW()`
+4. **Cleanup actions**: Updates booking state to `EXPIRED`, which releases the seats back to availability
+
+**Timing**: Bookings expire 15 minutes after creation, giving users enough time to complete payment while preventing seats from being held indefinitely.
+
+### How do you calculate refunds? Show the formula.
+
+Refunds are calculated based on cancellation fees and refund cutoff dates:
+
+**Refund Formula:**
+```
+Refund Amount = price_at_booking × (1 - cancellation_fee_percent/100)
+```
+
+**Business Rules:**
+
+- **Before refund cutoff** (trip starts > `refundable_until_days_before` days from now):
+  - ✅ Apply cancellation fee and refund remaining amount
+  - ✅ Release seats back to availability
+
+- **After refund cutoff** (trip starts ≤ `refundable_until_days_before` days from now):
+  - ❌ No refund ($0)
+  - ❌ Keep seats reserved (trip is imminent, can't resell)
+
+**Example:**
+```
+Booking: $100
+Cancellation Fee: 10%
+
+Before cutoff: Refund = $100 × (1 - 0.10) = $90
+After cutoff:  Refund = $0
+```
+
+### What database concurrency control do you use?
+
+The system uses **PostgreSQL transactions with row-level locking** (`SELECT FOR UPDATE`):
+
+1. **Row-level locks**: `SELECT FOR UPDATE` locks the trip row during booking creation
+2. **Transaction isolation**: PostgreSQL's default READ COMMITTED isolation level ensures consistency
+3. **Atomic operations**: All seat availability checks and booking creation happen within a single transaction
+4. **Automatic serialization**: Concurrent requests are automatically serialized by the database, ensuring only one can modify the trip at a time
+
+This approach provides strong consistency guarantees while avoiding the complexity of application-level locking mechanisms.
+
+### How would you test this system for race conditions?
+
+Race condition testing involves **concurrent request simulation**:
+
+1. **Setup**: Create a trip with limited seats (e.g., 2 seats available)
+2. **Concurrent requests**: Launch 3+ simultaneous booking requests for 1 seat each using `Promise.all()`
+3. **Verification**:
+   - Exactly 2 bookings should succeed
+   - 1+ bookings should fail with `409 Conflict - Not enough seats available`
+   - Database should remain consistent (no overbooking)
+   - Total confirmed + pending seats should never exceed `max_capacity`
+
+**Test Implementation:**
+```typescript
+const promises = [];
+for (let i = 0; i < 3; i++) {
+  promises.push(
+    createBooking(tripId, userId, 1)
+      .catch(err => ({ error: err.message, status: err.status }))
+  );
+}
+const results = await Promise.all(promises);
+
+const successful = results.filter(r => !r.error);
+const failed = results.filter(r => r.error);
+assert(successful.length <= availableSeats);
+assert(failed.length >= 1);
+assert(failed.every(r => r.status === 409));
+```
+
+This tests real concurrency scenarios and verifies that transaction isolation prevents overbooking.
+
+---
+
 ## 📋 Table of Contents
 
+- [Questions & Answers](#-questions--answers)
 - [Tech Stack](#-tech-stack)
 - [Features](#-features)
 - [Architecture Overview](#-architecture-overview)
@@ -13,7 +133,6 @@
 - [API Documentation](#-api-documentation)
 - [Database Schema](#-database-schema)
 - [State Machine](#-state-machine)
-- [Concurrency Control](#-concurrency-control)
 - [Refund System](#-refund-system)
 - [Testing](#-testing)
 - [Performance & Monitoring](#-performance--monitoring)
@@ -193,97 +312,6 @@ Terminal States: EXPIRED, CANCELLED
 - `CONFIRMED` → `CANCELLED` (user cancellation)
 - `EXPIRED` → (terminal state)
 - `CANCELLED` → (terminal state)
-
----
-
-## 🔒 Concurrency Control
-
-### Database Concurrency Control
-
-**We use PostgreSQL transactions with optimistic concurrency control.** The system avoids explicit row-level locking (`SELECT FOR UPDATE`) in favor of a reservation-based approach that naturally serializes concurrent requests through database transactions.
-
-#### Key Principles
-
-- ✅ **No explicit locks** - Transactions ensure atomic seat availability checks
-- ✅ **Serializable isolation** - PostgreSQL's default transaction isolation prevents dirty reads
-- ✅ **Reservation buffer** - The `reservations` table acts as a temporary seat hold
-
-### Preventing Overbooking
-
-**How it works:**
-
-1. **Calculate Available Seats Dynamically**
-   ```sql
-   SELECT COALESCE(SUM(num_seats), 0) as total_seats
-   FROM reservations
-   WHERE trip_id = ? AND expires_at > NOW()
-   ```
-
-2. **Available Seats Formula**
-   ```
-   Available Seats = max_capacity - reserved_seats
-   ```
-
-3. **Create Reservation & Booking**
-   - Create reservation record (holds seats temporarily)
-   - Create booking record in `PENDING_PAYMENT` state
-   - Transaction ensures atomicity
-
-4. **Transaction Serialization**
-   - Concurrent requests are serialized automatically
-   - Only one can succeed when competing for the last seat
-
-**Why this prevents overbooking:**
-
-- ✅ **Single source of truth** - Available seats calculated from reservations table
-- ✅ **Transaction isolation** - Concurrent requests can't see uncommitted reservations
-- ✅ **Automatic cleanup** - Expired reservations are cleaned up before availability checks
-
-### Handling Duplicate Webhooks
-
-**Idempotency through unique keys:**
-
-1. Each webhook includes an `idempotency_key` parameter
-2. The key is stored in `bookings.idempotency_key` (unique constraint)
-3. On webhook receipt:
-   - Check if `idempotency_key` exists for different booking → return duplicate error
-   - Check if webhook already processed → return current state
-   - Otherwise process webhook and store the key
-
-**Benefits:**
-
-- ✅ **Safe retries** - Payment providers can safely retry failed webhooks
-- ✅ **No double processing** - Same webhook won't create duplicate state changes
-- ✅ **Audit trail** - Track which webhooks were processed when
-
-### Auto-Expiration of Bookings
-
-**Background cleanup process:**
-
-When payment webhooks never arrive, bookings remain in `PENDING_PAYMENT` state indefinitely. The system uses a background job to automatically expire stale bookings.
-
-#### Expiry Service
-
-- **Function**: `expirePendingBookings()` runs periodically (via cron job)
-- **Frequency**: Configurable (default: every 5 minutes)
-
-#### Expiration Logic
-
-1. Find bookings where `state = PENDING_PAYMENT` and `expires_at < NOW()`
-2. Find orphaned reservations where `expires_at < NOW()` and `booking_id IS NULL`
-
-#### Cleanup Actions
-
-- Update booking state to `EXPIRED`
-- Delete associated reservations to release seats back to availability
-
-#### Timing
-
-- **Expiration Window**: Bookings expire 15 minutes after creation
-- **Rationale**:
-  - Gives users enough time to complete payment
-  - Prevents seats from being held indefinitely
-  - Balances user experience with seat availability
 
 ---
 
