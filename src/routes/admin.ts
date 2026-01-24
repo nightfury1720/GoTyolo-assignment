@@ -195,4 +195,35 @@ router.post('/admin/expire-bookings', async (req: Request, res: Response, next: 
   }
 });
 
+router.delete('/admin/bookings', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await db.run('DELETE FROM bookings');
+    res.json({ message: 'All bookings deleted successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/admin/trips', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // Delete bookings first due to foreign key constraint
+    await db.run('DELETE FROM bookings');
+    await db.run('DELETE FROM trips');
+    res.json({ message: 'All trips and bookings deleted successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/admin/clean', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // Delete bookings first due to foreign key constraint
+    await db.run('DELETE FROM bookings');
+    await db.run('DELETE FROM trips');
+    res.json({ message: 'Database cleaned successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
